@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+frontend/.next/
+
+# Environment
+.env
+frontend/.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Data & workspaces
+data/datasets/
+workspaces/
+uploads/
+
+# qmd index
+.qmd/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build
+frontend/out/
+frontend/.next/
+
+# Lessons (user-generated, not shipped)
+backend/memory/lessons/*.md
+!backend/memory/lessons/.gitkeep
+
+# Zip
+files.zip
