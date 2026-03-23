@@ -247,6 +247,12 @@ class DockerExecutor:
         volumes = {
             str(workspace): {"bind": "/workspace", "mode": "rw"},
         }
+
+        # Always mount user data directory
+        user_data_dir = settings.DATA_CACHE_DIR.parent / "user"
+        if user_data_dir.exists():
+            volumes[str(user_data_dir)] = {"bind": "/data/user", "mode": "ro"}
+
         if data_mounts:
             for host_path, container_path in data_mounts.items():
                 volumes[host_path] = {"bind": container_path, "mode": "ro"}
