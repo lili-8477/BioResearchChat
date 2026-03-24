@@ -16,6 +16,20 @@ data/user/
 
 Before starting, list what's in `data/user/` so you know what data is available.
 
+## Pre-cached Models
+
+Large models are stored in `data/models/` and mounted at `/data/models/` in containers. This avoids re-downloading on every run.
+
+```
+data/models/
+├── model_v1.1/             →  /data/models/model_v1.1  (SCimilarity, ~30GB)
+└── celltypist/             →  /data/models/celltypist   (CellTypist, ~50MB)
+```
+
+Download models with: `./scripts/download-model.sh scimilarity`
+
+In your analysis code, always check `/data/models/` first before attempting any downloads. If a model isn't cached, tell the user to run the download script rather than downloading inside the container.
+
 ## Available Skills
 
 Read the YAML files in `backend/skills/templates/` for established pipeline templates:

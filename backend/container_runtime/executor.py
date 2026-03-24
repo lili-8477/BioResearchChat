@@ -248,10 +248,14 @@ class DockerExecutor:
             str(workspace): {"bind": "/workspace", "mode": "rw"},
         }
 
-        # Always mount user data directory
+        # Always mount user data and cached models
         user_data_dir = settings.DATA_CACHE_DIR.parent / "user"
         if user_data_dir.exists():
             volumes[str(user_data_dir)] = {"bind": "/data/user", "mode": "ro"}
+
+        models_dir = settings.DATA_CACHE_DIR.parent / "models"
+        if models_dir.exists():
+            volumes[str(models_dir)] = {"bind": "/data/models", "mode": "ro"}
 
         if data_mounts:
             for host_path, container_path in data_mounts.items():

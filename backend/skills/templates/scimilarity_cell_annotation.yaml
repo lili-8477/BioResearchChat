@@ -37,22 +37,20 @@ code_template: |
 
   os.makedirs("/workspace/output", exist_ok=True)
 
-  # --- 1. Download pretrained model if not cached ---
-  MODEL_DIR = "/workspace/models/model_v1.1"
+  # --- 1. Locate pretrained model ---
+  # Models are pre-cached at /data/models/ (mounted from host data/models/)
+  # Download once on host: ./scripts/download-model.sh scimilarity
+  MODEL_DIR = "/data/models/model_v1.1"
   if not os.path.exists(MODEL_DIR):
-      print("Downloading SCimilarity pretrained model...")
-      os.makedirs("/workspace/models", exist_ok=True)
-      subprocess.run([
-          "curl", "-L", "-o", "/workspace/models/model_v1.1.tar.gz",
-          "https://zenodo.org/records/10685499/files/model_v1.1.tar.gz?download=1"
-      ], check=True)
-      subprocess.run([
-          "tar", "-xzf", "/workspace/models/model_v1.1.tar.gz",
-          "-C", "/workspace/models/"
-      ], check=True)
-      print("Model downloaded and extracted.")
-  else:
-      print("Using cached model.")
+      # Fallback: try workspace cache
+      MODEL_DIR = "/workspace/models/model_v1.1"
+  if not os.path.exists(MODEL_DIR):
+      raise FileNotFoundError(
+          "SCimilarity model not found. Download it first:\n"
+          "  ./scripts/download-model.sh scimilarity\n"
+          "This downloads to data/models/ which is mounted into containers."
+      )
+  print(f"Using model at {MODEL_DIR}")
 
   from scimilarity import CellAnnotation
   from scimilarity.utils import align_dataset, lognorm_counts
