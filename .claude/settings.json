@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker *)",
+      "Bash(docker build *)",
+      "Bash(docker run *)",
+      "Bash(docker exec *)",
+      "Bash(docker images *)",
+      "Bash(docker ps *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(qmd *)",
+      "Bash(curl *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(chmod *)",
+      "Write(workspaces/**)",
+      "Write(backend/memory/lessons/**)",
+      "Read(*)"
+    ]
+  }
+}

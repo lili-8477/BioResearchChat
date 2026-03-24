@@ -22,6 +22,12 @@ class Settings:
     SKILLS_DIR: Path = Path(os.getenv("SKILLS_DIR", str(Path(__file__).parent / "skills" / "templates")))
     LESSONS_DIR: Path = Path(os.getenv("LESSONS_DIR", str(Path(__file__).parent / "memory" / "lessons")))
 
+    # Self-hosted data mirror (S3, GCS, HTTP, NFS)
+    # Set to your mirror URL to avoid downloading from Zenodo/UCSC directly
+    # Example: "https://your-bucket.s3.amazonaws.com/biochat-data"
+    # The mirror should have the same directory structure: models/, references/, atlases/
+    DATA_MIRROR: str = os.getenv("DATA_MIRROR", "")
+
     IMAGE_PREFIX: str = "research-agent"
 
 

@@ -1,0 +1,87 @@
+# Data Registry — catalog of large datasets, models, and references
+# The agent checks this before running analysis to ensure required data is available.
+# Users can host their own mirror by setting DATA_MIRROR in .env
+#
+# Structure in containers:
+#   /data/models/      — pretrained models (scimilarity, celltypist, etc.)
+#   /data/references/  — reference genomes, annotations (hg38, mm10, etc.)
+#   /data/atlases/     — cell atlases, reference datasets
+#   /data/user/        — user's own files
+
+models:
+  scimilarity_v1.1:
+    description: "SCimilarity cell annotation model + KNN index + reference embeddings"
+    url: "https://zenodo.org/records/10685499/files/model_v1.1.tar.gz?download=1"
+    size_gb: 28.2
+    extract: true
+    extract_dir: "model_v1.1"
+    mount_path: "/data/models/model_v1.1"
+    local_path: "data/models/model_v1.1"
+    checksum: "546251b7c435f3b1dbe38e2e420ad57f"
+    required_by: ["scimilarity_cell_annotation", "scimilarity_cell_query"]
+
+  celltypist_models:
+    description: "CellTypist pre-trained cell type classification models"
+    url: "pip://celltypist"
+    size_gb: 0.05
+    extract: false
+    mount_path: "/data/models/celltypist"
+    local_path: "data/models/celltypist"
+    required_by: ["celltypist_annotation"]
+    install_cmd: "python -c \"import celltypist; celltypist.models.download_models()\""
+
+references:
+  hg38_genome:
+    description: "Human reference genome GRCh38/hg38 FASTA + index"
+    url: "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz"
+    size_gb: 3.1
+    extract: true
+    mount_path: "/data/references/hg38"
+    local_path: "data/references/hg38"
+    required_by: ["chipseq", "atacseq", "alignment"]
+
+  hg38_gtf:
+    description: "GENCODE v44 human gene annotation GTF"
+    url: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.annotation.gtf.gz"
+    size_gb: 0.05
+    extract: true
+    mount_path: "/data/references/hg38"
+    local_path: "data/references/hg38"
+    required_by: ["rnaseq", "chipseq"]
+
+  mm10_genome:
+    description: "Mouse reference genome mm10 FASTA + index"
+    url: "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.fa.gz"
+    size_gb: 2.8
+    extract: true
+    mount_path: "/data/references/mm10"
+    local_path: "data/references/mm10"
+    required_by: ["chipseq", "atacseq", "alignment"]
+
+  star_hg38_index:
+    description: "STAR genome index for hg38 (pre-built)"
+    url: "manual"
+    size_gb: 30
+    mount_path: "/data/references/star_hg38"
+    local_path: "data/references/star_hg38"
+    required_by: ["rnaseq_alignment", "arriba_fusion"]
+    note: "Too large to host. Build locally: STAR --runMode genomeGenerate ..."
+
+atlases:
+  scimilarity_atlas:
+    description: "SCimilarity human tissue atlas (~22M cells)"
+    url: "https://zenodo.org/records/10895214/files/atlas_data.tar.gz?download=1"
+    size_gb: 50
+    extract: true
+    mount_path: "/data/atlases/scimilarity"
+    local_path: "data/atlases/scimilarity"
+    required_by: ["scimilarity_cell_query"]
+    note: "Only needed for cell query across the full atlas. Cell annotation works without this."
+
+  tabula_sapiens:
+    description: "Tabula Sapiens — multi-organ human cell atlas"
+    url: "https://figshare.com/ndownloader/files/34702011"
+    size_gb: 7.2
+    mount_path: "/data/atlases/tabula_sapiens"
+    local_path: "data/atlases/tabula_sapiens"
+    required_by: ["reference_mapping"]

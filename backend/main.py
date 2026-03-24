@@ -119,6 +119,22 @@ async def list_datasets():
     return {"datasets": orchestrator.data_api.list_cached_datasets()}
 
 
+@app.get("/api/data/status")
+async def data_status():
+    """List all registered data with availability status."""
+    from data.data_manager import DataManager
+    dm = DataManager()
+    return {"data": dm.list_all()}
+
+
+@app.get("/api/data/check/{skill_name}")
+async def check_data_requirements(skill_name: str):
+    """Check data requirements for a skill."""
+    from data.data_manager import DataManager
+    dm = DataManager()
+    return dm.check_requirements(skill_name)
+
+
 # --- Skills Endpoints ---
 
 

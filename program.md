@@ -16,19 +16,52 @@ data/user/
 
 Before starting, list what's in `data/user/` so you know what data is available.
 
-## Pre-cached Models
+## Data Cache
 
-Large models are stored in `data/models/` and mounted at `/data/models/` in containers. This avoids re-downloading on every run.
+Large datasets are stored on the host and mounted read-only into every container. **Never download large files inside containers** — they're ephemeral and the data is lost.
 
 ```
-data/models/
-├── model_v1.1/             →  /data/models/model_v1.1  (SCimilarity, ~30GB)
-└── celltypist/             →  /data/models/celltypist   (CellTypist, ~50MB)
+data/
+├── user/        → /data/user/        User's own files
+├── models/      → /data/models/      Pretrained models (scimilarity, celltypist)
+├── references/  → /data/references/  Genomes, annotations (hg38, mm10)
+└── atlases/     → /data/atlases/     Cell atlases (tabula sapiens)
 ```
 
-Download models with: `./scripts/download-model.sh scimilarity`
+### Before any analysis, check data availability:
 
-In your analysis code, always check `/data/models/` first before attempting any downloads. If a model isn't cached, tell the user to run the download script rather than downloading inside the container.
+```bash
+./scripts/download-model.sh list                         # see what's cached
+./scripts/download-model.sh check scimilarity_cell_annotation  # check a skill's needs
+./scripts/download-model.sh setup scimilarity_cell_annotation  # download everything needed
+```
+
+### The registry (`backend/data/registry.yaml`) lists all known datasets:
+- **models**: scimilarity_v1.1 (28GB), celltypist (50MB)
+- **references**: hg38 genome (3.1GB), mm10 genome (2.8GB), gene annotations
+- **atlases**: scimilarity atlas (50GB), tabula sapiens (7.2GB)
+
+### For self-hosting / faster downloads:
+Users can mirror data to S3, GCS, or a local NFS mount, then set `DATA_MIRROR` in `.env`. The download script will use the mirror instead of the default URLs.
+
+### In analysis code, always use these paths:
+```python
+# Models
+MODEL_DIR = "/data/models/model_v1.1"
+
+# References
+GENOME = "/data/references/hg38/hg38.fa"
+GTF = "/data/references/hg38/gencode.v44.annotation.gtf"
+
+# User data
+adata = sc.read("/data/user/counts.h5ad")
+```
+
+If a required dataset is missing, **do not try to download it inside the container**. Instead, tell the user:
+```
+Required data not found: scimilarity_v1.1
+Run: ./scripts/download-model.sh get scimilarity_v1.1
+```
 
 ## Available Skills
 

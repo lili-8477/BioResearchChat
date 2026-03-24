@@ -2,8 +2,8 @@
 # Launch BioResearchChat with Claude Code (uses your Max plan)
 #
 # Usage:
-#   ./run-agent.sh                          # interactive mode
-#   ./run-agent.sh "analyze my scRNA-seq"   # with a prompt
+#   ./run-agent.sh                              # interactive, auto-approved
+#   ./run-agent.sh "analyze my scRNA-seq"       # with a prompt, auto-approved
 #
 # Put your data files in data/user/ before running.
 
@@ -16,9 +16,7 @@ ls -lh data/user/ 2>/dev/null || echo "(empty — put your files in data/user/)"
 echo ""
 
 if [ -n "$1" ]; then
-  # Run with a prompt
-  claude -p "Read program.md, then: $*"
+  claude --dangerously-skip-permissions -p "Read program.md, then: $*"
 else
-  # Interactive mode
-  claude "Read program.md and help me with my bioinformatics analysis. Start by checking what data I have in data/user/"
+  claude --dangerously-skip-permissions "Read program.md and help me with my bioinformatics analysis. Start by checking what data I have in data/user/"
 fi
