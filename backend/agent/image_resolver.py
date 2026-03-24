@@ -6,6 +6,7 @@ from config import settings
 
 BASE_IMAGES = {
     "python-spatial": f"{settings.IMAGE_PREFIX}/python-spatial:base",
+    "python-scimilarity": f"{settings.IMAGE_PREFIX}/python-scimilarity:base",
     "r-rnaseq": f"{settings.IMAGE_PREFIX}/r-rnaseq:base",
     "python-chipseq": f"{settings.IMAGE_PREFIX}/python-chipseq:base",
     "python-general": f"{settings.IMAGE_PREFIX}/python-general:base",

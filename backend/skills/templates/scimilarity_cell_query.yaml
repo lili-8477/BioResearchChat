@@ -1,7 +1,7 @@
 name: scimilarity_cell_query
 description: "Cell similarity search using SCimilarity CellQuery. Given a query cell or cell state, searches across a large reference atlas to find the most similar cells. Returns nearest neighbor metadata including disease associations, tissue origins, and study sources. Useful for finding cells matching a specific phenotype across millions of profiled cells."
 analysis_type: scrna_seq
-base_image: python-spatial
+base_image: python-scimilarity
 language: python
 packages:
   - scimilarity

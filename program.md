@@ -106,6 +106,7 @@ Analysis code runs inside Docker containers. The base images are:
 
 | Image | Use for | Pre-installed |
 |---|---|---|
+| `research-agent/python-scimilarity:base` | SCimilarity annotation/query | scimilarity, scanpy, pytorch, hnswlib, tiledb |
 | `research-agent/python-spatial:base` | scRNA-seq, spatial | scanpy, squidpy, celltypist |
 | `research-agent/r-rnaseq:base` | Bulk RNA-seq | DESeq2, edgeR, ggplot2 |
 | `research-agent/python-chipseq:base` | ChIP/ATAC-seq | deeptools, macs2, pysam |

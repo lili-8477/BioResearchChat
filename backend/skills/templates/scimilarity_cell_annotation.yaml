@@ -1,7 +1,7 @@
 name: scimilarity_cell_annotation
 description: "Cell type annotation and similarity search using SCimilarity (Genentech). Embeds cells using a pretrained model, performs KNN-based cell type annotation, UMAP visualization, and cell similarity queries across a large reference atlas. Requires downloading the pretrained model from Zenodo."
 analysis_type: scrna_seq
-base_image: python-spatial
+base_image: python-scimilarity
 language: python
 packages:
   - scimilarity
