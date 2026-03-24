@@ -17,6 +17,7 @@ from data.api import DataAPI
 from container_runtime.executor import DockerExecutor
 from skills.manager import SkillManager
 from memory.manager import MemoryManager
+from agent.analysis_log import write_analysis_log
 
 
 class SessionState(str, Enum):
@@ -430,6 +431,7 @@ class Orchestrator:
                 )
 
                 # Auto-extract lessons from successful analysis
+                new_lessons = []
                 try:
                     new_lessons = await self.memory_manager.extract_lessons(
                         plan=plan,
@@ -448,7 +450,31 @@ class Orchestrator:
                             data={"lessons": [l.model_dump() for l in new_lessons]},
                         )
                 except Exception:
-                    pass  # Lesson extraction failure shouldn't block results
+                    pass
+
+                # Write analysis log
+                try:
+                    question = session.messages[0].content if session.messages else ""
+                    log_path = write_analysis_log(
+                        session_id=session.id,
+                        question=question,
+                        paper_info=session.paper_info,
+                        plan=plan,
+                        code=session.code,
+                        language=language,
+                        result=result,
+                        evaluation=evaluation,
+                        lessons=[l.model_dump() for l in new_lessons],
+                        skills_used=[s["name"] for s in skills],
+                        retries=session.retry_count,
+                    )
+                    yield session.add_message(
+                        "assistant",
+                        f"Analysis log saved: `{log_path}`",
+                        msg_type="system",
+                    )
+                except Exception:
+                    pass
 
                 return
 
@@ -464,6 +490,25 @@ class Orchestrator:
                     msg_type="error",
                     data={"evaluation": evaluation},
                 )
+
+                # Write failure log
+                try:
+                    question = session.messages[0].content if session.messages else ""
+                    write_analysis_log(
+                        session_id=session.id,
+                        question=question,
+                        paper_info=session.paper_info,
+                        plan=plan,
+                        code=session.code,
+                        language=language,
+                        result=result,
+                        evaluation=evaluation,
+                        skills_used=[s["name"] for s in skills],
+                        retries=session.retry_count,
+                    )
+                except Exception:
+                    pass
+
                 return
 
             # Fix code (with lessons context to avoid repeating mistakes)

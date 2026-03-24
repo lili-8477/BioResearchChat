@@ -55,17 +55,26 @@ export default function ResultsView({
         <span className="text-xs font-medium text-green-300">
           Analysis Complete
         </span>
-        {!lessonSaved && (
-          <button
-            onClick={() => setShowLessonForm(!showLessonForm)}
+        <div className="flex items-center gap-2">
+          <a
+            href={`${backendUrl}/api/sessions/${sessionId}/log`}
+            download
             className="text-[10px] px-2 py-1 rounded border border-green-800/50 text-green-400 hover:bg-green-900/30 transition-colors"
           >
-            Save Lesson
-          </button>
-        )}
-        {lessonSaved && (
-          <span className="text-[10px] text-green-400">Lesson saved</span>
-        )}
+            Download Log
+          </a>
+          {!lessonSaved && (
+            <button
+              onClick={() => setShowLessonForm(!showLessonForm)}
+              className="text-[10px] px-2 py-1 rounded border border-green-800/50 text-green-400 hover:bg-green-900/30 transition-colors"
+            >
+              Save Lesson
+            </button>
+          )}
+          {lessonSaved && (
+            <span className="text-[10px] text-green-400">Lesson saved</span>
+          )}
+        </div>
       </div>
 
       <div className="px-4 py-3 text-sm">

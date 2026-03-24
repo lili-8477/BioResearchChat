@@ -119,6 +119,15 @@ async def list_datasets():
     return {"datasets": orchestrator.data_api.list_cached_datasets()}
 
 
+@app.get("/api/sessions/{session_id}/log")
+async def get_analysis_log(session_id: str):
+    """Get the analysis log for a session."""
+    log_path = settings.WORKSPACE_DIR / session_id / "analysis_log.md"
+    if not log_path.exists():
+        raise HTTPException(status_code=404, detail="No analysis log for this session")
+    return FileResponse(log_path, filename=f"analysis_log_{session_id[:8]}.md", media_type="text/markdown")
+
+
 @app.get("/api/data/status")
 async def data_status():
     """List all registered data with availability status."""

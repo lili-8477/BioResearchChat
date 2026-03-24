@@ -194,6 +194,15 @@ docker run --rm \
     - Up to 3 retries before asking the user for help
 11. **Present results** — Show the user what was produced. Open/display plots if possible.
 12. **Save lessons** — Write 1-3 non-obvious insights as lesson files.
+13. **Write analysis log** — Save a complete report to `workspaces/current/analysis_log.md`:
+    - Question and context
+    - Plan (image, steps, expected outputs)
+    - Full generated code
+    - Execution output (stdout, stderr, exit code)
+    - Output files list
+    - Evaluation (success/fail, summary)
+    - Lessons learned
+    This log is the permanent record of the analysis.
 
 ## Autonomous Mode
 
