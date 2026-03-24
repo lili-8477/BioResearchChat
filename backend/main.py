@@ -99,6 +99,51 @@ async def get_output_file(session_id: str, file_path: str):
     return FileResponse(full_path, filename=full_path.name)
 
 
+@app.get("/api/sessions/{session_id}/download")
+async def download_workspace(session_id: str):
+    """Download the entire workspace output as a zip file."""
+    import zipfile
+    import tempfile
+
+    workspace = settings.WORKSPACE_DIR / session_id
+    if not workspace.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Collect all files to zip: output/, analysis_log.md, analysis script
+    files_to_zip = []
+
+    output_dir = workspace / "output"
+    if output_dir.exists():
+        for f in output_dir.rglob("*"):
+            if f.is_file():
+                files_to_zip.append((f, f"output/{f.relative_to(output_dir)}"))
+
+    log_file = workspace / "analysis_log.md"
+    if log_file.exists():
+        files_to_zip.append((log_file, "analysis_log.md"))
+
+    for ext in ["py", "R"]:
+        script = workspace / f"analysis.{ext}"
+        if script.exists():
+            files_to_zip.append((script, f"analysis.{ext}"))
+
+    if not files_to_zip:
+        raise HTTPException(status_code=404, detail="No output files found")
+
+    # Create zip
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path, archive_name in files_to_zip:
+            zf.write(file_path, archive_name)
+    tmp.close()
+
+    return FileResponse(
+        tmp.name,
+        filename=f"analysis_{session_id[:8]}.zip",
+        media_type="application/zip",
+    )
+
+
 @app.get("/api/images")
 async def list_images():
     """List cached Docker images."""

@@ -57,11 +57,18 @@ export default function ResultsView({
         </span>
         <div className="flex items-center gap-2">
           <a
+            href={`${backendUrl}/api/sessions/${sessionId}/download`}
+            download
+            className="text-[10px] px-2 py-1 rounded bg-green-900/30 border border-green-800/50 text-green-300 hover:bg-green-900/50 transition-colors"
+          >
+            Download All
+          </a>
+          <a
             href={`${backendUrl}/api/sessions/${sessionId}/log`}
             download
             className="text-[10px] px-2 py-1 rounded border border-green-800/50 text-green-400 hover:bg-green-900/30 transition-colors"
           >
-            Download Log
+            Log
           </a>
           {!lessonSaved && (
             <button
