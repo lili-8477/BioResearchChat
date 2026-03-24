@@ -18,6 +18,12 @@
       "Bash(cp *)",
       "Bash(mv *)",
       "Bash(chmod *)",
+      "Bash(./scripts/*)",
+      "Bash(echo *)",
+      "Bash(date *)",
+      "Bash(du *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
       "Write(workspaces/**)",
       "Write(backend/memory/lessons/**)",
       "Read(*)"
