@@ -1,0 +1,194 @@
+---
+name: scimilarity_cell_query
+description: "Cell similarity search with SCimilarity CellQuery: find similar cells across reference atlas, disease/tissue associations"
+analysis_type: scrna_seq
+base_image: python-scimilarity
+language: python
+packages: [scimilarity, scanpy, anndata, matplotlib, numpy, pandas]
+tags: [scrnaseq, single-cell, cell-similarity, cell-query, scimilarity, embedding, knn, reference-atlas, disease-association]
+---
+
+# Cell Similarity Search with SCimilarity CellQuery
+
+## When to use
+- Search a large reference atlas for cells similar to a query cell/state
+- Disease association analysis, tissue origin mapping, study source identification
+- Requires pretrained model at /data/models/model_v1.1
+
+## Key decisions
+- k=10000 nearest neighbors by default (adjust for specificity vs coverage)
+- Filter proportions at >0.1% to remove noise
+- Query can be single cell (by index) or centroid of a cluster
+- Results include disease, tissue, cell type, and study metadata
+
+## Template
+
+```python
+# REQUIREMENTS: scimilarity scanpy anndata matplotlib numpy pandas
+import scanpy as sc
+from matplotlib import pyplot as plt
+import numpy as np
+import pandas as pd
+import os
+import warnings
+warnings.filterwarnings("ignore")
+
+sc.set_figure_params(dpi=100)
+sc.settings.verbosity = 0
+plt.rcParams["figure.figsize"] = [8, 5]
+plt.rcParams["pdf.fonttype"] = 42
+
+os.makedirs("/workspace/output", exist_ok=True)
+
+# --- 1. Locate pretrained model ---
+MODEL_DIR = "/data/models/model_v1.1"
+if not os.path.exists(MODEL_DIR):
+    MODEL_DIR = "/workspace/models/model_v1.1"
+if not os.path.exists(MODEL_DIR):
+    raise FileNotFoundError(
+        "SCimilarity model not found. Download it first:\n"
+        "  ./scripts/download-model.sh scimilarity\n"
+        "This downloads to data/models/ which is mounted into containers."
+    )
+print(f"Using model at {MODEL_DIR}")
+
+from scimilarity import CellQuery
+from scimilarity.utils import align_dataset, lognorm_counts
+
+# --- 2. Load CellQuery model ---
+print("Loading SCimilarity CellQuery model...")
+cq = CellQuery(MODEL_DIR)
+
+# --- 3. Load query data ---
+print("Loading query data...")
+adata = sc.read("/data/input.h5ad")
+print(f"Loaded {adata.n_obs} cells x {adata.n_vars} genes")
+
+# --- 4. Preprocess ---
+print("Aligning dataset to model gene order...")
+adata = align_dataset(adata, cq.gene_order)
+adata = lognorm_counts(adata)
+
+# --- 5. Get embeddings ---
+print("Computing SCimilarity embeddings...")
+adata.obsm["X_scimilarity"] = cq.get_embeddings(adata.X)
+
+# --- 6. UMAP visualization of query data ---
+print("Computing UMAP...")
+sc.pp.neighbors(adata, use_rep="X_scimilarity")
+sc.tl.umap(adata)
+sc.pl.umap(adata, save="_query_data.png")
+os.makedirs("figures", exist_ok=True)
+if os.path.exists("figures/umap_query_data.png"):
+    os.rename("figures/umap_query_data.png", "/workspace/output/umap_query_data.png")
+
+# --- 7. Select query cell(s) ---
+print("Selecting query cells...")
+query_idx = 0
+query_embedding = adata.obsm["X_scimilarity"][[query_idx]]
+query_id = adata.obs.index[query_idx]
+print(f"Query cell: {query_id}")
+
+# --- 8. Search for similar cells in the reference atlas ---
+print("Searching reference atlas for similar cells...")
+k = 10000
+nn_idxs, nn_dists, results_metadata = cq.search_nearest(query_embedding, k=k)
+print(f"Found {len(results_metadata)} similar cells")
+
+# --- 9. Analyze disease associations ---
+print("Analyzing disease associations...")
+
+def calculate_proportions(metadata, column):
+    counts = metadata[column].value_counts()
+    proportions = 100 * counts / counts.sum()
+    return proportions
+
+disease_props = calculate_proportions(results_metadata, "disease")
+disease_props = disease_props[disease_props > 0.1]
+
+fig, ax = plt.subplots(figsize=(8, max(4, len(disease_props) * 0.4)))
+disease_props.plot(kind="barh", ax=ax)
+ax.set_xlabel("% of similar cells")
+ax.set_title(f"Disease associations for cells similar to {query_id}")
+ax.set_xticklabels([f"{int(t)}%" for t in ax.get_xticks()])
+plt.tight_layout()
+fig.savefig("/workspace/output/disease_associations.png", dpi=150, bbox_inches="tight")
+plt.close()
+
+# --- 10. Analyze tissue origins ---
+print("Analyzing tissue origins...")
+tissue_props = calculate_proportions(results_metadata, "tissue")
+tissue_props = tissue_props[tissue_props > 0.1]
+
+fig, ax = plt.subplots(figsize=(8, max(4, len(tissue_props) * 0.4)))
+tissue_props.plot(kind="barh", ax=ax)
+ax.set_xlabel("% of similar cells")
+ax.set_title(f"Tissue origins for cells similar to {query_id}")
+ax.set_xticklabels([f"{int(t)}%" for t in ax.get_xticks()])
+plt.tight_layout()
+fig.savefig("/workspace/output/tissue_origins.png", dpi=150, bbox_inches="tight")
+plt.close()
+
+# --- 11. Analyze cell type composition ---
+print("Analyzing cell type composition of neighbors...")
+if "prediction" in results_metadata.columns:
+    celltype_col = "prediction"
+elif "celltype" in results_metadata.columns:
+    celltype_col = "celltype"
+else:
+    celltype_col = results_metadata.columns[
+        results_metadata.columns.str.contains("cell", case=False)
+    ][0] if any(results_metadata.columns.str.contains("cell", case=False)) else None
+
+if celltype_col:
+    celltype_props = calculate_proportions(results_metadata, celltype_col)
+    celltype_props = celltype_props.head(20)
+
+    fig, ax = plt.subplots(figsize=(8, max(4, len(celltype_props) * 0.4)))
+    celltype_props.plot(kind="barh", ax=ax)
+    ax.set_xlabel("% of similar cells")
+    ax.set_title(f"Cell types among neighbors of {query_id}")
+    ax.set_xticklabels([f"{int(t)}%" for t in ax.get_xticks()])
+    plt.tight_layout()
+    fig.savefig("/workspace/output/celltype_composition.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+# --- 12. Analyze study sources ---
+print("Analyzing source studies...")
+study_props = calculate_proportions(results_metadata, "study")
+study_props = study_props.head(15)
+
+fig, ax = plt.subplots(figsize=(8, max(4, len(study_props) * 0.4)))
+study_props.plot(kind="barh", ax=ax)
+ax.set_xlabel("% of similar cells")
+ax.set_title(f"Source studies for cells similar to {query_id}")
+ax.set_xticklabels([f"{int(t)}%" for t in ax.get_xticks()])
+plt.tight_layout()
+fig.savefig("/workspace/output/source_studies.png", dpi=150, bbox_inches="tight")
+plt.close()
+
+# --- 13. Save results ---
+print("Saving results...")
+results_metadata.to_csv("/workspace/output/similarity_search_results.csv", index=False)
+disease_props.to_csv("/workspace/output/disease_proportions.csv")
+tissue_props.to_csv("/workspace/output/tissue_proportions.csv")
+
+# Distance distribution
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.hist(nn_dists.flatten(), bins=50, edgecolor="black", alpha=0.7)
+ax.set_xlabel("Distance to query cell")
+ax.set_ylabel("Count")
+ax.set_title("Distance distribution of nearest neighbors")
+fig.savefig("/workspace/output/distance_distribution.png", dpi=150, bbox_inches="tight")
+plt.close()
+
+# Print summary
+print("\n=== Similarity Search Summary ===")
+print(f"Query cell: {query_id}")
+print(f"Neighbors retrieved: {len(results_metadata)}")
+print(f"\nTop disease associations:")
+print(disease_props.head(10).to_string())
+print(f"\nTop tissue origins:")
+print(tissue_props.head(10).to_string())
+print("\nAnalysis complete.")
+```

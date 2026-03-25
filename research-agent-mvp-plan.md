@@ -1,6 +1,6 @@
 # Research Agent MVP — Plan
 
-A self-hosted, Docker-based research agent with a chat UI. User uploads a paper (PDF or URL) and asks a research question. The agent reads the paper, plans the analysis, sets up a containerized environment, writes code, executes it, and returns results — like Claude Code, but purpose-built for bioinformatics research.
+A self-hosted, Docker-based research agent with a chat UI. User pastes a URL (GitHub repo or science paper) and asks a research question. The agent parses the URL, guides the user to clarify their request, searches skills and memory, plans the analysis, executes code in a container, reviews results, and generates a report — like Claude Code, but purpose-built for bioinformatics research.
 
 ---
 
@@ -8,21 +8,23 @@ A self-hosted, Docker-based research agent with a chat UI. User uploads a paper 
 
 ```
 User (browser)
-    │  paper PDF/URL + research question
+    │  paper/repo URL + research question
     ▼
 ┌──────────────────────────────────────────┐
 │  Web UI (Next.js / React)                │
-│  Chat interface, file upload, results    │
+│  Chat interface, URL input, results      │
 └──────────────┬───────────────────────────┘
                │ REST / WebSocket
                ▼
 ┌──────────────────────────────────────────┐
 │  Backend Orchestrator (Python / FastAPI)  │
 │                                          │
-│  1. Parse paper → extract methods        │
-│  2. Plan analysis → pick image + steps   │
-│  3. Write code → execute in container    │
-│  4. Evaluate output → retry if failed    │
+│  1. Parse URL → extract context          │
+│  2. Guide user → clarify request         │
+│  3. Search skills + memory               │
+│  4. Plan analysis → user reviews         │
+│  5. Execute code in container            │
+│  6. Review results → generate report     │
 │                                          │
 │  Talks to Claude API for all LLM calls   │
 └──────┬───────────────┬───────────────────┘
@@ -32,14 +34,13 @@ User (browser)
 │ Claude API  │  │ Docker Execution Layer    │
 │ (remote)    │  │                           │
 │             │  │ Base images (you maintain) │
-│ - parse     │  │ ├── python-spatial        │
-│ - plan      │  │ ├── r-rnaseq             │
-│ - code gen  │  │ ├── python-chipseq       │
-│ - evaluate  │  │ └── ...                  │
-│             │  │                           │
+│ - parse URL │  │ ├── python-spatial        │
+│ - converse  │  │ ├── r-rnaseq             │
+│ - plan      │  │ ├── python-chipseq       │
+│ - code gen  │  │ └── ...                  │
+│ - evaluate  │  │                           │
 │             │  │ Cached images (agent)     │
 │             │  │ ├── python-spatial+scvi   │
-│             │  │ ├── r-rnaseq+slingshot   │
 │             │  │ └── ...                  │
 └─────────────┘  └──────────┬───────────────┘
                             │ -v mount
@@ -61,56 +62,240 @@ User (browser)
 ```
 START
   │
-  ├─ 1. Receive paper + question from user
+  ├─ 1. RECEIVE URL + QUESTION
+  │     - User pastes a URL (optional) and/or asks a research question
+  │     - URL auto-detected from message text if not explicitly attached
   │
-  ├─ 2. PARSE PAPER (Claude API)
-  │     - Extract: methods, tools, packages, data types
-  │     - Identify: analysis type (scRNA-seq, spatial, bulk RNA, ChIP-seq, etc.)
+  ├─ 2. PARSE URL (route by type)
+  │     - GitHub URL → GitHub API (repo metadata, README, file tree, config files)
+  │     - Paper/docs URL → crawl4ai (clean markdown extraction)
+  │     - Direct PDF URL → download + Claude Vision (page images)
+  │     - No URL → skip to step 3
+  │     - Extract structured context:
+  │       ├── purpose  — what the project/paper aims to achieve
+  │       ├── input    — required data (GEO IDs, BAM files, counts)
+  │       ├── method   — analytical methods and tools
+  │       └── output   — what results are produced
   │
-  ├─ 3. PLAN ANALYSIS (Claude API)
-  │     - Generate step-by-step analysis plan
-  │     - Determine required packages
-  │     - Select base image (python-spatial, r-rnaseq, etc.)
-  │     - Stream plan to user for review/edit
+  ├─ 3. GUIDE USER (conversational triage)
+  │     - If request is underspecified → ask clarifying questions
+  │     - Multi-turn conversation to refine:
+  │       ├── What analysis do you want to run?
+  │       ├── What data do you have?
+  │       └── Any specific parameters or comparisons?
+  │     - Once enough context → proceed to planning
   │
-  ├─ 4. RESOLVE ENVIRONMENT
-  │     - Check: cached image with all required packages?
-  │       ├── YES → use cached image
-  │       └── NO  → start from base image
-  │                  → install missing packages
-  │                  → docker commit → cache as new tagged image
+  ├─ 4. SEARCH SKILLS + MEMORY (progressive loading)
+  │     a. Skill registry search (lightweight, ~50 tokens/skill)
+  │        - Match by analysis_type, tags, keyword overlap
+  │        - Returns: name, description, packages — NO code templates
+  │     b. Memory/lesson search (QMD hybrid: BM25 + vector + reranking)
+  │        - Search past lessons by tags and query text
+  │        - Returns relevant insights and pitfalls from prior analyses
+  │     → Planner sees only metadata, not full skill code
   │
-  ├─ 5. MOUNT DATA
-  │     - Query database API for required datasets
-  │     - Mount into container via -v /data:/data
+  ├─ 5. GENERATE PLAN (Claude API)
+  │     - Input: parsed URL context + user question + skill registry + lessons
+  │     - Output: step-by-step plan with:
+  │       ├── base image selection
+  │       ├── extra packages needed
+  │       ├── datasets to mount
+  │       ├── skill_reference (which skill to use as template)
+  │       └── expected outputs
+  │     - Stream plan to user for review
+  │     - User can approve, reject, or request modifications
+  │     - Multi-round modification supported
   │
-  ├─ 6. WRITE CODE (Claude API)
-  │     - Generate analysis script based on plan
-  │     - Write to mounted workspace directory
+  ├─ 6. EXECUTE PLAN
+  │     a. Resolve environment
+  │        - Check cached images → extend base if needed → docker commit
+  │     b. Mount data
+  │        - Query database API for required datasets
+  │     c. Load skill content (on demand, single skill only)
+  │        - Load full markdown body of the planner's chosen skill (~800 tokens)
+  │        - Includes: "When to use", "Key decisions", code template
+  │     d. Write code (Claude API)
+  │        - Input: plan + single skill content + lessons
+  │        - Output: complete executable script
+  │     e. Execute in container
+  │        - docker exec → stream stdout/stderr to UI
+  │        - Auto-detect missing packages → install + retry (no retry burn)
+  │     f. Self-correction loop
+  │        - On failure: evaluate error → fix code → retry (max 3)
+  │        - Lessons context included in fix prompt to avoid repeating mistakes
   │
-  ├─ 7. EXECUTE
-  │     - docker exec → run script in container
-  │     - Stream stdout/stderr back to UI in real-time
-  │
-  ├─ 8. EVALUATE (Claude API)
+  ├─ 7. REVIEW RESULTS (Claude API)
   │     - Read stdout/stderr + output files
-  │     - Success? → return results to user
-  │     - Error?   → diagnose, rewrite code, go to step 7
-  │     - Max 3 retries before asking user for help
+  │     - Evaluate: did the analysis succeed? Are outputs valid?
+  │     - Generate summary of findings
   │
-  └─ 9. RETURN RESULTS
-        - Plots, tables, stats → display in chat UI
-        - Generated files → download links
+  ├─ 8. GENERATE OUTPUT + LOG
+  │     a. Results to user
+  │        - Plots (PNG), tables (CSV), stats → display in chat UI
+  │        - Download links for all output files
+  │        - Workspace zip download (all outputs in one file)
+  │     b. Analysis log (markdown)
+  │        - Session ID, question, paper info, plan, code, output, evaluation
+  │        - Saved to workspace directory
+  │     c. Extract lessons (auto)
+  │        - Claude extracts reusable insights from successful analyses
+  │        - Saved as markdown files with YAML frontmatter
+  │        - Indexed by QMD for future hybrid search
+  │
+  └─ 9. DONE
+        - Session state → completed
+        - User can ask follow-up questions or start new analysis
 END
 ```
+
+---
+
+## URL Parsing
+
+### Route by URL type
+
+| URL pattern | Fetcher | What it gets |
+|-------------|---------|--------------|
+| `github.com/*` | GitHub API | Repo metadata, README (8k cap), file tree, config files (setup.py, requirements.txt, etc.) |
+| `*.pdf` or PDF content-type | httpx download + Claude Vision | PDF pages as images, full document understanding |
+| Everything else (papers, docs) | crawl4ai | Clean markdown via `fit_markdown` (main content, no nav/ads/boilerplate) |
+
+### Structured output
+
+All URL types are parsed by Claude into:
+
+```json
+{
+  "url_type": "github | paper",
+  "purpose": "What this project/paper aims to achieve",
+  "input": "Required data or inputs",
+  "method": "Analytical methods, algorithms, tools",
+  "output": "What results are produced",
+  "analysis_type": "scrna_seq | bulk_rnaseq | chipseq | spatial | general",
+  "packages": ["referenced software packages"],
+  "language": "python | r",
+  "datasets": ["GSE...", "TCGA-..."],
+  "summary": "One-paragraph summary"
+}
+```
+
+### Environment variables
+
+```bash
+GITHUB_TOKEN=ghp_...   # Optional. Without: 60 req/hr. With: 5,000 req/hr.
+```
+
+---
+
+## Progressive Skill Loading
+
+Skills are stored as **Markdown files with YAML frontmatter** in `backend/skills/templates/`. Two-tier loading minimizes token usage:
+
+### Tier 1: Registry (planning phase)
+
+Lightweight metadata only — name, description, tags, packages. No code.
+
+```
+skills/templates/
+├── scanpy_scrna_clustering.md
+├── deseq2_bulk_rnaseq.md
+├── deeptools_heatmap.md
+├── macs2_chipseq_peaks.md
+├── spatial_transcriptomics.md
+├── scimilarity_cell_annotation.md
+├── scimilarity_cell_query.md
+└── env_setup.md
+```
+
+**Skill file format:**
+
+```markdown
+---
+name: scanpy_scrna_clustering
+description: "Single-cell RNA-seq: QC, normalize, HVG, PCA, UMAP, Leiden clustering, markers"
+analysis_type: scrna_seq
+base_image: python-spatial
+language: python
+packages: [scanpy, anndata, matplotlib, leidenalg, numpy, pandas]
+tags: [scrnaseq, single-cell, clustering, umap, scanpy, leiden, marker-genes]
+---
+
+# scRNA-seq Clustering with Scanpy
+
+## When to use
+- Standard single-cell RNA-seq from 10x Chromium
+
+## Key decisions
+- QC filters: >200 genes, <5000 genes, <20% mito
+- 30 PCs, 15 neighbors, Leiden resolution=0.8
+
+## Template
+
+```python
+# REQUIREMENTS: scanpy anndata matplotlib leidenalg numpy pandas
+import scanpy as sc
+...
+```
+```
+
+**Registry search** scores by: analysis_type match (10pts), tag match (3pts each), keyword overlap (2pts), package name match (4pts).
+
+### Tier 2: Full content (code generation phase)
+
+Only the single skill chosen by the planner is loaded. The full markdown body (prose + code blocks) is passed to the code writer.
+
+### Token savings
+
+| Phase | Before (YAML) | After (progressive MD) |
+|-------|---------------|----------------------|
+| Planning | 3 skills × ~200 tokens metadata | Registry: 8 skills × ~50 tokens = ~400 |
+| Code gen | 3 skills × ~800 tokens (with code) = ~2400 | 1 skill × ~800 tokens = ~800 |
+| **Total skill tokens/session** | **~4-5K** | **~1.2K (~70% reduction)** |
+
+---
+
+## Memory & Lessons (QMD Hybrid Search)
+
+Lessons are reusable insights extracted from past analyses, stored as markdown files with YAML frontmatter in `backend/memory/lessons/`.
+
+### Storage format
+
+```markdown
+---
+id: 059f7bc7
+source: agent
+tags: [scrnaseq, batch-correction, harmony, integration]
+session_id: test-002
+created_at: 2026-03-23T09:51:56
+---
+
+# Use Harmony for batch correction across samples
+
+When integrating multiple scRNA-seq samples, Harmony batch correction
+on PCA embeddings worked much better than regressing out batch in the
+normalization step...
+```
+
+### Search
+
+Uses **QMD** for hybrid search (BM25 full-text + vector + reranking):
+
+- `_qmd_index()` — indexes lesson markdown files with `qmd collection add/update`
+- `_qmd_search(query)` — hybrid search returning ranked lessons
+- Falls back to keyword-based scoring if QMD is unavailable
+
+### Lesson lifecycle
+
+1. **Auto-extraction** — after successful analysis, Claude extracts lessons from the plan, code, output, and evaluation
+2. **User-created** — user can save lessons via `/lesson <text>` or `/save <text>` in chat
+3. **Search** — lessons are retrieved during planning and code-fixing phases
+4. **Indexed** — QMD keeps the search index up to date
 
 ---
 
 ## Image Management
 
 ### Tier 1: Base images (you maintain)
-
-Pre-built with common packages. Rebuild periodically or when major versions change.
 
 | Image name         | Base            | Pre-installed packages                         |
 |--------------------|-----------------|------------------------------------------------|
@@ -119,74 +304,27 @@ Pre-built with common packages. Rebuild periodically or when major versions chan
 | `python-chipseq`   | python:3.11-slim| deeptools, macs2, pybedtools, pysam            |
 | `python-general`   | python:3.11-slim| pandas, numpy, scipy, scikit-learn, matplotlib |
 
-Each has a Dockerfile in the repo. Built with:
-
-```bash
-docker build -t research-agent/python-spatial:base -f images/python-spatial.Dockerfile .
-```
-
 ### Tier 2: Agent-extended images (cached dynamically)
 
-When the agent needs extra packages not in the base:
-
-```python
-# Pseudocode for the image resolver
-def resolve_image(base_image: str, extra_packages: list[str]) -> str:
-    tag = base_image + "+" + "+".join(sorted(extra_packages))
-    
-    # Check if cached image exists
-    if docker_client.images.get(tag):
-        return tag  # <1 second startup
-    
-    # Extend base image
-    container = docker_client.containers.run(base_image, detach=True)
-    container.exec_run(f"pip install {' '.join(extra_packages)}")
-    container.commit(repository=tag)
-    container.remove()
-    
-    return tag  # first run: 2-5 min, subsequent: <1 second
-```
-
-Naming convention:
 ```
 research-agent/python-spatial:base              ← you maintain
 research-agent/python-spatial:base+scvi         ← agent created
 research-agent/python-spatial:base+scvi+cellpose ← agent created
 ```
 
-Cleanup policy: prune cached images older than 30 days or exceeding a disk limit.
+Cleanup policy: prune cached images older than 30 days or exceeding disk limit.
 
 ---
 
 ## Database API
 
-A lightweight service that manages dataset access. Containers don't fetch data themselves — the API mounts it.
+Containers don't fetch data themselves — the database API mounts it.
 
-```python
-# Pseudocode
-class DataAPI:
-    def mount_dataset(self, dataset_id: str) -> str:
-        """Returns host path ready for docker -v mount."""
-        
-        path = self.local_cache / dataset_id
-        if path.exists():
-            return str(path)
-        
-        # Download if not cached
-        if dataset_id.startswith("GSE"):
-            self._download_geo(dataset_id, path)
-        elif dataset_id.startswith("TCGA-"):
-            self._download_tcga(dataset_id, path)
-        else:
-            raise ValueError(f"Unknown dataset: {dataset_id}")
-        
-        return str(path)
-```
-
-Supported sources (MVP):
-- GEO (GEOquery / direct FTP)
-- TCGA (TCGAbiolinks / GDC API)
-- Local files (user uploads via UI)
+Supported sources:
+- **GEO** (GSE ID → local cache → mount)
+- **TCGA** (project ID → GDC API → local cache → mount)
+- **Local datasets** (user data or pre-cached references/models)
+- **Self-hosted mirror** (S3/GCS/HTTP for large models like SCimilarity)
 
 ---
 
@@ -194,12 +332,13 @@ Supported sources (MVP):
 
 | Component          | Technology                  | Why                                        |
 |--------------------|-----------------------------|--------------------------------------------|
-| Frontend           | Next.js + React + Tailwind  | Chat UI, file upload, streaming responses  |
+| Frontend           | Next.js + React + Tailwind  | Chat UI, URL input, streaming responses    |
 | Backend            | Python + FastAPI            | Async, easy Docker SDK integration         |
-| LLM                | Claude API (Sonnet/Opus)    | Best code generation, long context for papers |
+| LLM                | Claude API (Sonnet/Opus)    | Best code generation, long context         |
 | Container runtime  | Docker + docker-py SDK      | Local, fast, image caching                 |
-| Database API       | FastAPI (same backend or separate) | Dataset mounting and caching          |
-| Paper parsing      | Claude API (PDF vision) or PyMuPDF | Extract text + figures from papers   |
+| URL parsing        | GitHub API + crawl4ai + Claude Vision | Route by URL type, clean extraction |
+| Skill search       | Keyword scoring on YAML frontmatter | Fast, no external dependencies      |
+| Memory search      | QMD (BM25 + vector + reranking) | Hybrid search on markdown lessons     |
 | Real-time comms    | WebSocket                   | Stream execution output to chat UI         |
 
 ---
@@ -208,111 +347,68 @@ Supported sources (MVP):
 
 ```
 research-agent/
-├── frontend/                    # Next.js chat UI
+├── frontend/
 │   ├── app/
 │   │   ├── page.tsx             # Chat interface
-│   │   ├── api/                 # API routes (proxy to backend)
+│   │   ├── lessons/page.tsx     # Lessons browser
+│   │   ├── skills/page.tsx      # Skills browser
 │   │   └── components/
 │   │       ├── ChatWindow.tsx
-│   │       ├── PaperUpload.tsx
-│   │       ├── PlanReview.tsx   # User reviews/edits analysis plan
-│   │       └── ResultsView.tsx  # Plots, tables, downloads
+│   │       ├── PaperUpload.tsx   # URL input (no file upload)
+│   │       ├── PlanReview.tsx    # User reviews/edits plan
+│   │       ├── ResultsView.tsx   # Plots, tables, downloads
+│   │       └── Nav.tsx
 │   └── package.json
 │
 ├── backend/
-│   ├── main.py                  # FastAPI app entry
+│   ├── main.py                   # FastAPI app entry
+│   ├── config.py                 # Settings from .env
 │   ├── agent/
-│   │   ├── orchestrator.py      # Main agent loop (steps 1-9)
-│   │   ├── paper_parser.py      # PDF/URL → extracted methods
-│   │   ├── planner.py           # Methods → analysis plan
-│   │   ├── code_writer.py       # Plan → executable script
-│   │   ├── evaluator.py         # Output → success/retry decision
-│   │   └── image_resolver.py    # Pick or build Docker image
-│   ├── docker/
-│   │   ├── executor.py          # docker-py wrapper (run, exec, commit)
-│   │   └── image_cache.py       # Cached image lookup + cleanup
+│   │   ├── orchestrator.py       # Main agent loop
+│   │   ├── paper_parser.py       # URL → GitHub API / crawl4ai → Claude parse
+│   │   ├── planner.py            # Context → analysis plan
+│   │   ├── code_writer.py        # Plan + skill content → executable script
+│   │   ├── evaluator.py          # Output → success/retry decision
+│   │   ├── image_resolver.py     # Pick or build Docker image
+│   │   └── analysis_log.py       # Write structured analysis log
+│   ├── container_runtime/
+│   │   ├── executor.py           # docker-py wrapper (run, install, retry)
+│   │   └── image_cache.py        # Cached image lookup + cleanup
+│   ├── skills/
+│   │   ├── manager.py            # Progressive loading: registry + on-demand content
+│   │   ├── models.py             # Skill pydantic model
+│   │   └── templates/            # Markdown skills with YAML frontmatter
+│   │       ├── scanpy_scrna_clustering.md
+│   │       ├── deseq2_bulk_rnaseq.md
+│   │       ├── deeptools_heatmap.md
+│   │       ├── macs2_chipseq_peaks.md
+│   │       ├── spatial_transcriptomics.md
+│   │       ├── scimilarity_cell_annotation.md
+│   │       ├── scimilarity_cell_query.md
+│   │       └── env_setup.md
+│   ├── memory/
+│   │   ├── manager.py            # Lesson CRUD + QMD hybrid search
+│   │   ├── models.py             # Lesson pydantic model
+│   │   └── lessons/              # Markdown lessons with YAML frontmatter
 │   ├── data/
-│   │   ├── api.py               # Database API (mount datasets)
-│   │   ├── geo.py               # GEO downloader
-│   │   └── tcga.py              # TCGA downloader
+│   │   ├── api.py                # Database API (mount datasets)
+│   │   ├── data_manager.py       # Data registry + download management
+│   │   └── registry.yaml         # Registered datasets and models
+│   ├── tests/
+│   │   ├── test_url_and_skills.py # URL parsing + skill loading tests
+│   │   └── reports/              # Test output reports (markdown)
 │   └── requirements.txt
 │
-├── images/                      # Dockerfiles for base images
+├── images/                       # Dockerfiles for base images
 │   ├── python-spatial.Dockerfile
 │   ├── r-rnaseq.Dockerfile
 │   ├── python-chipseq.Dockerfile
 │   └── python-general.Dockerfile
 │
-├── docker-compose.yml           # Frontend + backend + (optional) postgres
-├── .env.example                 # ANTHROPIC_API_KEY, etc.
+├── docker-compose.yml
+├── .env.example
 └── README.md
 ```
-
----
-
-## Phases
-
-### Phase 1: Skeleton (week 1)
-
-- [ ] FastAPI backend with WebSocket endpoint
-- [ ] Paper upload endpoint (PDF → text via PyMuPDF or Claude vision)
-- [ ] Claude API integration (single call: paper text → analysis plan)
-- [ ] Basic chat UI (Next.js) — send message, see response
-- [ ] One base Dockerfile (`python-general`)
-- [ ] `docker exec` wrapper — run a hardcoded script in container
-
-**Milestone:** Upload a paper, see an analysis plan in chat, manually run a script in container.
-
-### Phase 2: Agent loop (week 2-3)
-
-- [ ] Full orchestrator: parse → plan → code → execute → evaluate
-- [ ] Plan review step — user can edit plan before execution
-- [ ] Code generation from plan (Claude API)
-- [ ] Self-correction loop (read stderr → rewrite → retry, max 3)
-- [ ] Stream stdout/stderr to chat UI in real-time via WebSocket
-- [ ] Results display — render plots (PNG/SVG), tables, download links
-
-**Milestone:** Upload paper, approve plan, agent writes and runs analysis, returns results.
-
-### Phase 3: Image management (week 3-4)
-
-- [ ] Build 4 base images (python-spatial, r-rnaseq, python-chipseq, python-general)
-- [ ] Image resolver — agent decides which base image fits the analysis
-- [ ] Dynamic package install + `docker commit` for caching
-- [ ] Image cache lookup (check if extended image already exists)
-- [ ] Cleanup policy (prune old cached images)
-
-**Milestone:** Agent picks correct image, installs extra packages if needed, cached for next time.
-
-### Phase 4: Database API (week 4-5)
-
-- [ ] Dataset mount endpoint — given dataset ID, return host path
-- [ ] GEO downloader (GSE ID → local cache → mount)
-- [ ] TCGA downloader (TCGA project ID → local cache → mount)
-- [ ] User file upload → stored locally → mountable
-- [ ] Agent can request datasets in the planning step
-
-**Milestone:** Agent reads paper, identifies needed dataset, fetches and mounts it automatically.
-
-### Phase 5: Polish (week 5-6)
-
-- [ ] Conversation history (persist chats, reference previous analyses)
-- [ ] Export results as report (PDF or markdown)
-- [ ] Multiple concurrent sessions
-- [ ] Error handling and graceful degradation
-- [ ] Resource limits (container memory/CPU caps, execution timeout)
-- [ ] Basic auth (single user MVP, but wired for multi-user later)
-
----
-
-## Key Design Decisions
-
-1. **Claude API over local models** — code generation quality matters more than latency for this use case; Claude Sonnet/Opus writes better analysis code than any local model
-2. **Multiple base images over one fat image** — avoids package conflicts (Python vs R, version clashes), keeps images lean, agent picks the right one
-3. **Agent-extended cached images** — first run installs extra packages (2-5 min), `docker commit` saves it, every subsequent run is <1 second
-4. **Database API mounts data** — containers never fetch data themselves; clean separation, cacheable, reusable across sessions
-5. **Plan review before execution** — user sees and can edit the analysis plan before the agent writes code; avoids wasted compute on wrong approaches
-6. **WebSocket streaming** — user sees execution output in real-time, not after completion
 
 ---
 
@@ -322,6 +418,9 @@ research-agent/
 # LLM
 ANTHROPIC_API_KEY=sk-ant-api03-...
 CLAUDE_MODEL=claude-sonnet-4-5-20250929
+
+# GitHub (optional — increases rate limit from 60 to 5000 req/hr)
+GITHUB_TOKEN=ghp_...
 
 # Docker
 DOCKER_HOST=unix:///var/run/docker.sock
@@ -333,6 +432,7 @@ EXECUTION_TIMEOUT_SECONDS=3600
 
 # Data
 DATA_CACHE_DIR=/data/datasets
+DATA_MIRROR=                     # Self-hosted mirror URL (S3/GCS/HTTP)
 GEO_MIRROR=https://ftp.ncbi.nlm.nih.gov/geo/
 GDC_API=https://api.gdc.cancer.gov
 
@@ -340,3 +440,20 @@ GDC_API=https://api.gdc.cancer.gov
 FRONTEND_PORT=3000
 BACKEND_PORT=8000
 ```
+
+---
+
+## Key Design Decisions
+
+1. **URL-only input (no file upload)** — users paste GitHub repo or paper URLs; agent routes to GitHub API or crawl4ai for clean extraction; simpler UX, no server-side file storage
+2. **Conversational triage** — agent guides underspecified requests through multi-turn conversation before planning; reduces wasted compute on wrong approaches
+3. **Progressive skill loading** — planner sees only lightweight registry (~50 tokens/skill); full code template loaded on demand for only the selected skill; ~70% token reduction per session
+4. **Structured URL parsing** — all URLs parsed into purpose/input/method/output schema; gives planner consistent context regardless of source type
+5. **QMD hybrid memory search** — lessons indexed with BM25 + vector search; past insights automatically inform planning and code-fixing
+6. **Markdown skill format** — YAML frontmatter for machine search, markdown body for Claude context; includes "When to use" and "Key decisions" sections alongside code templates
+7. **Multiple base images over one fat image** — avoids package conflicts, keeps images lean, agent picks the right one
+8. **Agent-extended cached images** — first run installs extras (2-5 min), `docker commit` saves it, subsequent runs <1 second
+9. **Database API mounts data** — containers never fetch data; clean separation, cacheable, reusable across sessions
+10. **Plan review before execution** — user sees and can modify the plan through multiple rounds before code runs
+11. **Auto-lesson extraction** — successful analyses automatically generate lessons for future sessions
+12. **Analysis log per session** — structured markdown log with full provenance (question, plan, code, output, evaluation)

@@ -8,5 +8,6 @@ httpx==0.28.1
 pymupdf==1.25.3
 python-dotenv==1.0.1
 pydantic==2.10.4
-aiofiles==24.1.0
 pyyaml==6.0.2
+crawl4ai==0.8.6
+PyGithub==2.9.0

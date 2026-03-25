@@ -1,27 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 interface PaperUploadProps {
-  onUpload: (file: File) => void;
   onUrl: (url: string) => void;
-  uploadedFile: string | null;
   paperUrl: string | null;
 }
 
-export default function PaperUpload({ onUpload, onUrl, uploadedFile, paperUrl }: PaperUploadProps) {
-  const inputRef = useRef<HTMLInputElement>(null);
+export default function PaperUpload({ onUrl, paperUrl }: PaperUploadProps) {
   const [urlInput, setUrlInput] = useState("");
   const [showUrlInput, setShowUrlInput] = useState(false);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      onUpload(file);
-      e.target.value = "";
-      setShowUrlInput(false);
-    }
-  };
 
   const handleUrlSubmit = () => {
     const url = urlInput.trim();
@@ -32,36 +20,9 @@ export default function PaperUpload({ onUpload, onUrl, uploadedFile, paperUrl }:
     }
   };
 
-  const attached = uploadedFile || paperUrl;
-
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf"
-          onChange={handleChange}
-          className="hidden"
-        />
-
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs border border-[var(--border)] rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)]"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-          </svg>
-          Upload PDF
-        </button>
-
         <button
           onClick={() => setShowUrlInput(!showUrlInput)}
           className={`flex items-center gap-2 px-3 py-1.5 text-xs border rounded-lg transition-colors ${
@@ -84,9 +45,9 @@ export default function PaperUpload({ onUpload, onUrl, uploadedFile, paperUrl }:
           Paste URL
         </button>
 
-        {attached && (
+        {paperUrl && (
           <span className="text-xs text-[var(--success)]">
-            {paperUrl ? "URL attached" : "PDF attached"} — ready to analyze
+            URL attached — ready to analyze
           </span>
         )}
       </div>

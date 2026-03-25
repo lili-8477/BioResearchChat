@@ -50,7 +50,7 @@ def _strip_fencing(text: str) -> str:
 async def generate_code(
     plan: dict,
     language: str = "python",
-    skills: list[dict] | None = None,
+    skill_content: str | None = None,
     lessons: list[dict] | None = None,
 ) -> str:
     """Generate analysis code from an approved plan.
@@ -58,7 +58,7 @@ async def generate_code(
     Args:
         plan: Approved analysis plan
         language: python or r
-        skills: Matched skill templates (with full code_template)
+        skill_content: Full markdown content of a single matched skill (loaded on demand)
         lessons: Relevant lessons from memory
     """
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -68,16 +68,13 @@ async def generate_code(
         f"\nLanguage: {language}",
     ]
 
-    if skills:
-        for s in skills[:3]:  # Limit to top 3 to save tokens
-            if s.get("code_template"):
-                prompt_parts.append(
-                    f"\nReference skill template — **{s['name']}** ({s['description']}):\n"
-                    f"```{s.get('language', language)}\n{s['code_template']}\n```"
-                )
+    if skill_content:
+        prompt_parts.append(
+            f"\nReference skill template (adapt to the plan above):\n{skill_content}"
+        )
 
     if lessons:
-        lesson_texts = [f"- {l['title']}: {l['content']}" for l in lessons[:5]]
+        lesson_texts = [f"- {l['title']}: {l['content']}" for l in lessons[:3]]
         prompt_parts.append(
             f"\nLessons from past analyses — follow these:\n" + "\n".join(lesson_texts)
         )

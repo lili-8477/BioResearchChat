@@ -1,12 +1,9 @@
 """FastAPI backend — REST + WebSocket endpoints for the research agent."""
 
 import json
-import os
-import uuid
 from pathlib import Path
 
-import aiofiles
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -33,11 +30,6 @@ orchestrator = Orchestrator()
 image_cache = ImageCache()
 skill_manager = SkillManager()
 memory_manager = MemoryManager()
-
-# Ensure upload directory exists
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
-
 
 # --- REST Endpoints ---
 
@@ -68,21 +60,6 @@ async def get_session(session_id: str):
             for m in session.messages
         ],
     }
-
-
-@app.post("/api/sessions/{session_id}/upload")
-async def upload_paper(session_id: str, file: UploadFile = File(...)):
-    """Upload a PDF paper for analysis."""
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
-    file_id = str(uuid.uuid4())
-    file_path = UPLOAD_DIR / f"{file_id}.pdf"
-    async with aiofiles.open(file_path, "wb") as f:
-        content = await file.read()
-        await f.write(content)
-
-    return {"file_id": file_id, "path": str(file_path), "filename": file.filename}
 
 
 @app.get("/api/sessions/{session_id}/files/{file_path:path}")
@@ -303,7 +280,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             payload = json.loads(data)
 
             content = payload.get("content", "")
-            pdf_path = payload.get("pdf_path")
             paper_url = payload.get("paper_url")
 
             # Check if user wants to save a lesson via chat
@@ -326,7 +302,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     }))
                 continue
 
-            async for msg in orchestrator.handle_message(session_id, content, pdf_path, paper_url):
+            async for msg in orchestrator.handle_message(session_id, content, paper_url):
                 await websocket.send_text(json.dumps({
                     "role": msg.role,
                     "content": msg.content,

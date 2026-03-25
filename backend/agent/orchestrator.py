@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import AsyncGenerator
 
-from agent.paper_parser import parse_paper
+from agent.paper_parser import parse_url
 from agent.planner import generate_plan
 from agent.code_writer import generate_code, fix_code
 from agent.evaluator import evaluate_output
@@ -22,6 +22,7 @@ from agent.analysis_log import write_analysis_log
 
 class SessionState(str, Enum):
     IDLE = "idle"
+    CONVERSING = "conversing"
     PARSING = "parsing"
     PLANNING = "planning"
     AWAITING_APPROVAL = "awaiting_approval"
@@ -80,17 +81,20 @@ class Orchestrator:
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
-    def _find_skills(self, question: str, paper_info: dict) -> list[dict]:
-        """Search for relevant skills based on question and paper info."""
+    def _find_skill_registry(self, question: str, paper_info: dict) -> list[dict]:
+        """Search for relevant skills using lightweight registry metadata only.
+
+        Returns dicts with name/description/tags — no code_template.
+        Used for planning phase to minimize tokens.
+        """
         analysis_type = paper_info.get("analysis_type", "")
         tags = paper_info.get("packages", []) + paper_info.get("methods", [])
-        skills = self.skill_manager.search_skills(
+        return self.skill_manager.search_registry(
             query=question,
             analysis_type=analysis_type,
             tags=tags,
             limit=3,
         )
-        return [s.model_dump() for s in skills]
 
     def _find_lessons(self, question: str, paper_info: dict) -> list[dict]:
         """Search for relevant lessons based on question and paper info."""
@@ -106,7 +110,6 @@ class Orchestrator:
         self,
         session_id: str,
         content: str,
-        pdf_path: str | None = None,
         paper_url: str | None = None,
     ) -> AsyncGenerator[Message, None]:
         """Handle a user message and yield response messages as they're generated."""
@@ -125,7 +128,7 @@ class Orchestrator:
                 return
             elif content.lower() in ("reject", "no", "cancel"):
                 session.state = SessionState.IDLE
-                yield session.add_message("assistant", "Plan rejected. Send a new question or upload a new paper.")
+                yield session.add_message("assistant", "Plan rejected. Send a new question or paste a new URL.")
                 return
             else:
                 async for msg in self._replan(session, content):
@@ -133,31 +136,144 @@ class Orchestrator:
                 return
 
         # Auto-detect URL in message
-        if not pdf_path and not paper_url:
+        if not paper_url:
             url_match = re.search(r'https?://\S+', content)
             if url_match:
                 paper_url = url_match.group(0).rstrip(".,;:!?)")
 
-        async for msg in self._start_analysis(session, content, pdf_path, paper_url):
-            yield msg
+        # If we're in a conversation, continue guiding the user
+        if session.state == SessionState.CONVERSING:
+            # Check if user now has enough context to start analysis
+            if paper_url or self._is_analysis_ready(session, content):
+                async for msg in self._start_analysis(session, content, paper_url):
+                    yield msg
+            else:
+                async for msg in self._converse(session, content):
+                    yield msg
+            return
+
+        # Triage: decide whether to start analysis or converse first
+        if paper_url or self._is_analysis_ready(session, content):
+            async for msg in self._start_analysis(session, content, paper_url):
+                yield msg
+        else:
+            async for msg in self._converse(session, content):
+                yield msg
+
+    def _is_analysis_ready(self, session: Session, content: str) -> bool:
+        """Check if the user's message has enough context to start analysis.
+
+        Returns True when the message contains clear analysis intent with
+        specific details like dataset IDs, analysis types, or tool names.
+        Simple greetings or vague questions return False.
+        """
+        content_lower = content.lower().strip()
+
+        # Short/vague messages — not ready
+        if len(content_lower.split()) < 5:
+            return False
+
+        # Check for specific bioinformatics signals
+        analysis_signals = [
+            # Dataset references
+            r'GSE\d+', r'GSM\d+', r'SRR\d+', r'PRJNA\d+', r'TCGA',
+            # Specific analysis requests with detail
+            r'differential\s+expression', r'gene\s+set\s+enrichment',
+            r'peak\s+calling', r'clustering', r'trajectory',
+            r'heatmap', r'volcano\s+plot', r'PCA',
+            # Tool/package names indicating concrete intent
+            r'DESeq2', r'scanpy', r'seurat', r'deeptools', r'macs2',
+            r'edgeR', r'limma', r'cellranger',
+        ]
+
+        import re as _re
+        for pattern in analysis_signals:
+            if _re.search(pattern, content, _re.IGNORECASE):
+                return True
+
+        # If the user has already been conversing and provides a longer message
+        # with analysis-like keywords, treat as ready
+        if session.state == SessionState.CONVERSING and len(content_lower.split()) >= 10:
+            broad_signals = [
+                'analyz', 'analysis', 'compare', 'identify', 'quantif',
+                'run', 'execute', 'perform', 'process', 'pipeline',
+                'rnaseq', 'rna-seq', 'chipseq', 'chip-seq', 'atacseq',
+                'atac-seq', 'scrna', 'single.cell', 'bulk',
+            ]
+            if any(kw in content_lower for kw in broad_signals):
+                return True
+
+        return False
+
+    async def _converse(
+        self,
+        session: Session,
+        content: str,
+    ) -> AsyncGenerator[Message, None]:
+        """Guide the user to clarify their request before starting analysis."""
+        session.state = SessionState.CONVERSING
+        content_lower = content.lower().strip()
+
+        # Build a helpful response based on what's missing
+        # Check what we know so far from conversation history
+        has_data = any(
+            re.search(r'GSE\d+|GSM\d+|SRR\d+|PRJNA\d+|TCGA|\.h5ad|\.csv|\.fastq', m.content, re.IGNORECASE)
+            for m in session.messages if m.role == "user"
+        )
+        has_analysis_type = any(
+            re.search(r'differential|clustering|enrichment|peak|trajectory|heatmap|expression', m.content, re.IGNORECASE)
+            for m in session.messages if m.role == "user"
+        )
+
+        # Simple greetings
+        greetings = ['hi', 'hello', 'hey', 'help', 'what can you do']
+        if any(content_lower.startswith(g) for g in greetings) or content_lower in greetings:
+            yield session.add_message(
+                "assistant",
+                "Hi! I'm a bioinformatics research agent. I can help you:\n\n"
+                "- **Analyze a paper** — paste a paper URL and I'll extract the methods and reproduce the analysis\n"
+                "- **Run an analysis** — describe what you want to do (e.g., \"Run DESeq2 differential expression on GSE12345\")\n"
+                "- **Explore data** — tell me about your dataset and research question\n\n"
+                "What would you like to work on?",
+            )
+            return
+
+        # User asked something but it's vague
+        response_parts = ["I'd like to help! To set up the right analysis, could you tell me:\n"]
+
+        if not has_data:
+            response_parts.append(
+                "- **What data** are you working with? (e.g., a GEO accession like GSE12345, "
+                "a file path, or a paper URL)"
+            )
+        if not has_analysis_type:
+            response_parts.append(
+                "- **What analysis** do you want to run? (e.g., differential expression, "
+                "clustering, peak calling, trajectory analysis)"
+            )
+
+        if not has_data and not has_analysis_type:
+            response_parts.append(
+                "\nOr simply paste a **paper URL** and I'll extract the methods automatically."
+            )
+
+        yield session.add_message("assistant", "\n".join(response_parts))
 
     async def _start_analysis(
         self,
         session: Session,
         question: str,
-        pdf_path: str | None = None,
         paper_url: str | None = None,
     ) -> AsyncGenerator[Message, None]:
         """Start a new analysis: parse paper → generate plan."""
 
-        # Step 1: Parse paper
-        if pdf_path or paper_url:
+        # Step 1: Parse paper from URL
+        if paper_url:
             session.state = SessionState.PARSING
-            source = paper_url or pdf_path
-            yield session.add_message("assistant", f"Parsing paper from {source}...", msg_type="system")
+            yield session.add_message("assistant", f"Parsing paper from {paper_url}...", msg_type="system")
 
             try:
-                session.paper_info = await parse_paper(pdf_path=pdf_path, paper_url=paper_url)
+                session.paper_info = await parse_url(paper_url)
                 yield session.add_message(
                     "assistant",
                     f"Paper parsed: {session.paper_info.get('summary', 'Analysis extracted')}",
@@ -179,8 +295,8 @@ class Orchestrator:
                 "summary": question,
             }
 
-        # Find relevant skills and lessons
-        skills = self._find_skills(question, session.paper_info)
+        # Find relevant skills (registry metadata only — no code templates)
+        skills = self._find_skill_registry(question, session.paper_info)
         lessons = self._find_lessons(question, session.paper_info)
 
         if skills:
@@ -198,16 +314,15 @@ class Orchestrator:
                 msg_type="system",
             )
 
-        # Step 2: Generate plan (with skills + lessons context)
+        # Step 2: Generate plan (with skills registry + lessons context)
         session.state = SessionState.PLANNING
         yield session.add_message("assistant", "Generating analysis plan...", msg_type="system")
 
         try:
-            # Pass skill metadata (no code templates) and lessons to planner
-            skill_meta = [{k: v for k, v in s.items() if k != "code_template"} for s in skills]
+            # Pass lightweight skill registry (no code templates) to planner
             session.plan = await generate_plan(
                 session.paper_info, question,
-                skills=skill_meta,
+                skills=skills,
                 lessons=lessons,
             )
             session.state = SessionState.AWAITING_APPROVAL
@@ -233,14 +348,13 @@ class Orchestrator:
             f"User modifications: {modifications}"
         )
 
-        skills = self._find_skills(modified_question, session.paper_info)
+        skills = self._find_skill_registry(modified_question, session.paper_info)
         lessons = self._find_lessons(modified_question, session.paper_info)
-        skill_meta = [{k: v for k, v in s.items() if k != "code_template"} for s in skills]
 
         try:
             session.plan = await generate_plan(
                 session.paper_info, modified_question,
-                skills=skill_meta, lessons=lessons,
+                skills=skills, lessons=lessons,
             )
             session.state = SessionState.AWAITING_APPROVAL
 
@@ -259,34 +373,18 @@ class Orchestrator:
         """Execute an approved plan: resolve env → write code → run → evaluate."""
         plan = session.plan
 
-        # Search skills with full code templates for code generation
+        # Progressive loading: only load the chosen skill's full content
         question = session.messages[0].content if session.messages else ""
-        skills = self._find_skills(question, session.paper_info)
         lessons = self._find_lessons(question, session.paper_info)
 
-        # Refine skill search using plan's analysis type / image
-        plan_type = plan.get("base_image", "").replace("python-", "").replace("r-", "")
-        if plan_type:
-            type_skills = self.skill_manager.search_skills(
-                query=plan.get("title", ""),
-                analysis_type=plan_type,
-                limit=2,
-            )
-            # Merge, dedup by name
-            seen = {s["name"] for s in skills}
-            for s in type_skills:
-                d = s.model_dump()
-                if d["name"] not in seen:
-                    skills.append(d)
-
-        # Also check if the plan references a specific skill
+        # Load only the skill the planner selected (if any)
         skill_ref = plan.get("skill_reference")
+        skill_content = None
         if skill_ref:
-            ref_skill = self.skill_manager.get_skill(skill_ref)
-            if ref_skill:
-                ref_dict = ref_skill.model_dump()
-                if ref_dict["name"] not in {s["name"] for s in skills}:
-                    skills.insert(0, ref_dict)
+            skill_content = self.skill_manager.load_skill_content(skill_ref)
+
+        # Track skill names for logging
+        skills_used = [skill_ref] if skill_ref else []
 
         # Step 3: Resolve environment
         session.state = SessionState.RESOLVING_ENV
@@ -312,13 +410,13 @@ class Orchestrator:
             except Exception as e:
                 yield session.add_message("assistant", f"Warning: Dataset mount failed: {e}", msg_type="error")
 
-        # Step 5: Write code (with skills + lessons)
+        # Step 5: Write code (with single skill content + lessons)
         session.state = SessionState.WRITING_CODE
         yield session.add_message("assistant", "Writing analysis code...", msg_type="system")
 
         language = plan.get("language", "python")
         try:
-            session.code = await generate_code(plan, language, skills=skills, lessons=lessons)
+            session.code = await generate_code(plan, language, skill_content=skill_content, lessons=lessons)
             yield session.add_message("assistant", session.code, msg_type="code", data={"language": language})
         except Exception as e:
             session.state = SessionState.FAILED
@@ -465,7 +563,7 @@ class Orchestrator:
                         result=result,
                         evaluation=evaluation,
                         lessons=[l.model_dump() for l in new_lessons],
-                        skills_used=[s["name"] for s in skills],
+                        skills_used=skills_used,
                         retries=session.retry_count,
                     )
                     yield session.add_message(
@@ -503,7 +601,7 @@ class Orchestrator:
                         language=language,
                         result=result,
                         evaluation=evaluation,
-                        skills_used=[s["name"] for s in skills],
+                        skills_used=skills_used,
                         retries=session.retry_count,
                     )
                 except Exception:

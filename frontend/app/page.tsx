@@ -21,7 +21,6 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [agentState, setAgentState] = useState("idle");
-  const [uploadedPdf, setUploadedPdf] = useState<string | null>(null);
   const [paperUrl, setPaperUrl] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -35,8 +34,6 @@ export default function Home() {
         setSessionId(sid);
 
         // Connect WebSocket
-        // If BACKEND_URL is relative (e.g., /api), use current host for WS
-        // If absolute (e.g., http://localhost:8001), derive WS URL from it
         let wsBase: string;
         if (BACKEND_URL.startsWith("http")) {
           wsBase = BACKEND_URL.replace(/^http/, "ws").replace(/\/api\/?$/, "");
@@ -78,42 +75,13 @@ export default function Home() {
     wsRef.current.send(
       JSON.stringify({
         content,
-        pdf_path: uploadedPdf,
         paper_url: paperUrl,
       })
     );
 
-    // Clear attachments after first message that uses them
-    if (uploadedPdf) setUploadedPdf(null);
+    // Clear URL attachment after first message that uses it
     if (paperUrl) setPaperUrl(null);
     setInput("");
-  };
-
-  const handleUpload = async (file: File) => {
-    if (!sessionId) return;
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/upload`, {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      setUploadedPdf(data.path);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "system",
-          content: `Paper uploaded: ${file.name}`,
-          type: "system",
-        },
-      ]);
-    } catch (err) {
-      console.error("Upload failed:", err);
-    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -164,7 +132,6 @@ export default function Home() {
       {/* Input area */}
       <div className="border-t border-[var(--border)] px-6 py-4">
         <PaperUpload
-          onUpload={handleUpload}
           onUrl={(url) => {
             setPaperUrl(url);
             setMessages((prev) => [
@@ -172,7 +139,6 @@ export default function Home() {
               { role: "system", content: `Paper URL attached: ${url}`, type: "system" },
             ]);
           }}
-          uploadedFile={uploadedPdf}
           paperUrl={paperUrl}
         />
 
@@ -182,9 +148,9 @@ export default function Home() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              uploadedPdf || paperUrl
+              paperUrl
                 ? "Ask a research question about the attached paper..."
-                : "Upload a paper, paste a URL, or ask a research question..."
+                : "Paste a paper URL or ask a research question..."
             }
             className="flex-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-4 py-3 text-sm resize-none focus:outline-none focus:border-[var(--accent)] transition-colors"
             rows={2}

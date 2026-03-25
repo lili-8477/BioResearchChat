@@ -1,0 +1,83 @@
+---
+name: deeptools_heatmap
+description: "Signal heatmaps and profiles from bigWig over BED regions using deeptools"
+analysis_type: chipseq
+base_image: python-chipseq
+language: python
+packages: [deeptools, matplotlib, numpy]
+tags: [chipseq, atacseq, heatmap, deeptools, signal, visualization, bigwig]
+---
+
+# deeptools Signal Heatmap
+
+## When to use
+- Visualize ChIP-seq or ATAC-seq signal at peaks, TSS, or custom BED regions
+- Compare signal across multiple samples/conditions
+- Input: bigWig files + BED regions
+
+## Key decisions
+- reference-point mode centered on peak center
+- Window: ±3000bp around center
+- Bin size: 50bp
+- Sort by mean signal
+- Colormap: RdBu_r (red-blue diverging)
+
+## Template
+
+```python
+# REQUIREMENTS: deeptools matplotlib numpy
+import subprocess
+import os
+
+os.makedirs("/workspace/output", exist_ok=True)
+
+BIGWIG_FILES = ["/data/sample1.bw", "/data/sample2.bw"]
+REGIONS_BED = "/data/peaks.bed"
+LABELS = ["Sample1", "Sample2"]
+
+# --- 1. Compute matrix ---
+print("Computing signal matrix over regions...")
+matrix_cmd = [
+    "computeMatrix", "reference-point",
+    "-S"] + BIGWIG_FILES + [
+    "-R", REGIONS_BED,
+    "--referencePoint", "center",
+    "-a", "3000", "-b", "3000",
+    "--binSize", "50",
+    "-o", "/workspace/output/matrix.gz",
+    "--outFileNameMatrix", "/workspace/output/matrix_values.tab",
+    "-p", "4",
+    "--samplesLabel"] + LABELS
+
+result = subprocess.run(matrix_cmd, capture_output=True, text=True)
+if result.returncode != 0:
+    print(f"Error: {result.stderr}")
+else:
+    print("Matrix computed successfully.")
+
+# --- 2. Plot heatmap ---
+print("Plotting heatmap...")
+heatmap_cmd = [
+    "plotHeatmap",
+    "-m", "/workspace/output/matrix.gz",
+    "-o", "/workspace/output/heatmap.png",
+    "--colorMap", "RdBu_r",
+    "--whatToShow", "heatmap and colorbar",
+    "--sortUsing", "mean",
+    "--dpi", "150",
+]
+subprocess.run(heatmap_cmd, capture_output=True, text=True)
+
+# --- 3. Plot profile ---
+print("Plotting average profile...")
+profile_cmd = [
+    "plotProfile",
+    "-m", "/workspace/output/matrix.gz",
+    "-o", "/workspace/output/profile.png",
+    "--perGroup",
+    "--dpi", "150",
+]
+subprocess.run(profile_cmd, capture_output=True, text=True)
+
+print("Analysis complete.")
+```
