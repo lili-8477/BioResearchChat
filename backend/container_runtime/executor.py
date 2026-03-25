@@ -45,6 +45,7 @@ STDLIB_MODULES = {
     "contextlib", "dataclasses", "enum", "statistics", "operator", "bisect",
     "heapq", "queue", "socket", "http", "urllib", "email", "html", "xml",
     "sqlite3", "argparse", "configparser", "pprint", "unittest", "inspect",
+    "types", "platform", "signal", "locale", "decimal", "fractions",
 }
 
 

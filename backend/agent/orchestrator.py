@@ -400,13 +400,23 @@ class Orchestrator:
             yield session.add_message("assistant", f"Environment setup failed: {e}", msg_type="error")
             return
 
-        # Step 4: Mount data
+        # Step 4: Mount data (only for downloadable datasets — GEO/TCGA)
+        # Local data (models, user files) is auto-mounted by the executor.
         data_mounts = {}
         dataset_ids = [d["id"] if isinstance(d, dict) else d for d in plan.get("datasets", [])]
-        if dataset_ids:
-            yield session.add_message("assistant", f"Mounting datasets: {', '.join(dataset_ids)}", msg_type="system")
+        # Filter to only downloadable dataset formats
+        downloadable = [d for d in dataset_ids if d.upper().startswith("GSE") or d.upper().startswith("TCGA-")]
+        skipped = [d for d in dataset_ids if d not in downloadable]
+        if skipped:
+            yield session.add_message(
+                "assistant",
+                f"Skipping non-downloadable dataset IDs (already auto-mounted or not supported): {', '.join(skipped)}",
+                msg_type="system",
+            )
+        if downloadable:
+            yield session.add_message("assistant", f"Mounting datasets: {', '.join(downloadable)}", msg_type="system")
             try:
-                data_mounts = await self.data_api.mount_datasets(dataset_ids)
+                data_mounts = await self.data_api.mount_datasets(downloadable)
             except Exception as e:
                 yield session.add_message("assistant", f"Warning: Dataset mount failed: {e}", msg_type="error")
 

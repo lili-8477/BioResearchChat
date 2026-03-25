@@ -22,6 +22,9 @@ uploads/
 # qmd index
 .qmd/
 
+# URL parse cache (dev)
+.url_cache/
+
 # OS
 .DS_Store
 Thumbs.db

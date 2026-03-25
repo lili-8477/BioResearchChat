@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -166,6 +166,141 @@ async def check_data_requirements(skill_name: str):
     return dm.check_requirements(skill_name)
 
 
+# --- User Data Upload ---
+
+# User data directory: data/user/ → mounted as /data/user/ in containers
+USER_DATA_DIR = Path(settings.DATA_CACHE_DIR).parent / "user"
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024 * 1024  # 5GB
+
+
+@app.post("/api/data/upload")
+async def upload_data(file: UploadFile = File(...)):
+    """Upload a data file (max 5GB). Saved to data/user/ and mounted as /data/user/ in containers."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    # Sanitize filename — keep only safe characters
+    import re
+    safe_name = re.sub(r'[^\w.\-]', '_', file.filename)
+    dest = USER_DATA_DIR / safe_name
+
+    # Stream to disk in chunks to handle large files
+    total = 0
+    chunk_size = 8 * 1024 * 1024  # 8MB chunks
+    try:
+        with open(dest, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_SIZE:
+                    f.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail="File exceeds 5GB limit")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+    size_mb = total / (1024 * 1024)
+    return {
+        "filename": safe_name,
+        "size_mb": round(size_mb, 1),
+        "host_path": str(dest),
+        "container_path": f"/data/user/{safe_name}",
+    }
+
+
+@app.get("/api/data/files")
+async def list_user_files():
+    """List all files in the user data directory."""
+    files = []
+    if USER_DATA_DIR.exists():
+        for f in sorted(USER_DATA_DIR.iterdir()):
+            if f.is_file():
+                size_mb = f.stat().st_size / (1024 * 1024)
+                files.append({
+                    "filename": f.name,
+                    "size_mb": round(size_mb, 1),
+                    "container_path": f"/data/user/{f.name}",
+                })
+    return {"files": files}
+
+
+@app.delete("/api/data/files/{filename}")
+async def delete_user_file(filename: str):
+    """Delete a user-uploaded data file."""
+    import re
+    safe_name = re.sub(r'[^\w.\-]', '_', filename)
+    path = USER_DATA_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not str(path.resolve()).startswith(str(USER_DATA_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    path.unlink()
+    return {"deleted": safe_name}
+
+
+# --- Dev Endpoints ---
+
+
+@app.post("/api/dev/replay/{session_id}")
+async def replay_session(session_id: str):
+    """Dev only: re-execute the plan from a previous session without re-parsing URL or re-planning.
+
+    Loads the session's saved plan and jumps straight to execution.
+    Useful when debugging execution failures without burning API tokens on parsing/planning.
+    """
+    session = orchestrator.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session.plan:
+        raise HTTPException(status_code=400, detail="Session has no plan to replay")
+
+    # Reset state for re-execution
+    session.state = SessionState.AWAITING_APPROVAL
+    session.retry_count = 0
+
+    return {
+        "session_id": session.id,
+        "state": "awaiting_approval",
+        "plan_title": session.plan.get("title"),
+        "message": "Session reset to awaiting_approval. Send 'approve' via WebSocket to re-execute.",
+    }
+
+
+@app.get("/api/dev/sessions")
+async def list_sessions():
+    """Dev only: list all active sessions with their state and plan."""
+    sessions = []
+    for sid, s in orchestrator.sessions.items():
+        sessions.append({
+            "session_id": sid,
+            "state": s.state.value,
+            "has_plan": bool(s.plan),
+            "plan_title": s.plan.get("title") if s.plan else None,
+            "has_paper_info": bool(s.paper_info),
+            "message_count": len(s.messages),
+        })
+    return {"sessions": sessions}
+
+
+@app.delete("/api/dev/url-cache")
+async def clear_url_cache():
+    """Dev only: clear the URL parse cache."""
+    from agent.paper_parser import _CACHE_DIR
+    count = 0
+    for f in _CACHE_DIR.glob("*.json"):
+        f.unlink()
+        count += 1
+    return {"cleared": count}
+
+
 # --- Skills Endpoints ---
 
 
@@ -260,10 +395,39 @@ async def delete_lesson(lesson_id: str):
 
 # --- WebSocket Endpoint ---
 
+# Background task management: execution runs independently of WebSocket connection.
+# Messages are buffered so reconnecting clients catch up.
+import asyncio
+
+# {session_id: asyncio.Task} — tracks running agent tasks
+_running_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _run_agent_loop(session_id: str, content: str, paper_url: str | None):
+    """Run the agent loop in the background, buffering messages on the session."""
+    session = orchestrator.get_session(session_id)
+    if not session:
+        return
+    try:
+        async for msg in orchestrator.handle_message(session_id, content, paper_url):
+            # Messages are already appended to session.messages by the orchestrator.
+            # We just need to notify any connected WebSocket.
+            pass
+    except Exception as e:
+        if session:
+            session.add_message("assistant", f"Error: {e}", msg_type="error")
+    finally:
+        _running_tasks.pop(session_id, None)
+
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket for real-time chat with the agent."""
+    """WebSocket for real-time chat with the agent.
+
+    Execution runs as a background task so it survives WebSocket disconnects
+    (e.g., browser tab switches). The WebSocket polls for new messages and
+    streams them to the client. Reconnecting clients catch up on missed messages.
+    """
     await websocket.accept()
 
     # Ensure session exists
@@ -274,11 +438,42 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         session.id = session_id
         orchestrator.sessions[session_id] = session
 
-    try:
-        while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
+    # Track how many messages this client has already seen
+    seen = 0
 
+    async def flush_new_messages():
+        """Send any new messages the client hasn't seen yet."""
+        nonlocal seen
+        while seen < len(session.messages):
+            msg = session.messages[seen]
+            seen += 1
+            try:
+                await websocket.send_text(json.dumps({
+                    "role": msg.role,
+                    "content": msg.content,
+                    "type": msg.msg_type,
+                    "data": msg.data,
+                    "state": session.state.value,
+                }))
+            except Exception:
+                return False
+        return True
+
+    try:
+        # Send any existing messages (reconnect catch-up)
+        await flush_new_messages()
+
+        while True:
+            # Wait for client message with a timeout so we can also flush agent messages
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+            except asyncio.TimeoutError:
+                # No client message — just flush any new agent messages
+                if not await flush_new_messages():
+                    break
+                continue
+
+            payload = json.loads(data)
             content = payload.get("content", "")
             paper_url = payload.get("paper_url")
 
@@ -293,34 +488,29 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         source="user",
                         session_id=session_id,
                     ))
-                    await websocket.send_text(json.dumps({
-                        "role": "assistant",
-                        "content": f"Lesson saved: **{lesson.title}**",
-                        "type": "system",
-                        "data": {"lesson_id": lesson.id},
-                        "state": session.state.value,
-                    }))
+                    session.add_message("assistant", f"Lesson saved: **{lesson.title}**",
+                                        msg_type="system", data={"lesson_id": lesson.id})
+                await flush_new_messages()
                 continue
 
-            async for msg in orchestrator.handle_message(session_id, content, paper_url):
-                await websocket.send_text(json.dumps({
-                    "role": msg.role,
-                    "content": msg.content,
-                    "type": msg.msg_type,
-                    "data": msg.data,
-                    "state": session.state.value,
-                }))
+            # Add user message to session (so it's visible on reconnect)
+            # Note: handle_message also adds it, so we skip adding here
+            # and let the orchestrator handle it.
+
+            # Cancel any existing task for this session
+            existing = _running_tasks.get(session_id)
+            if existing and not existing.done():
+                existing.cancel()
+
+            # Run agent loop as background task
+            task = asyncio.create_task(_run_agent_loop(session_id, content, paper_url))
+            _running_tasks[session_id] = task
+
+            # Give the task a moment to start producing messages, then flush
+            await asyncio.sleep(0.1)
+            await flush_new_messages()
 
     except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_text(json.dumps({
-                "role": "assistant",
-                "content": f"Error: {str(e)}",
-                "type": "error",
-                "data": {},
-                "state": "failed",
-            }))
-        except Exception:
-            pass
+        pass  # Agent task keeps running in background
+    except Exception:
+        pass  # Agent task keeps running in background

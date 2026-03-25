@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import ChatWindow from "./components/ChatWindow";
 import PaperUpload from "./components/PaperUpload";
+import DataUpload from "./components/DataUpload";
 import Nav from "./components/Nav";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
@@ -23,37 +24,83 @@ export default function Home() {
   const [agentState, setAgentState] = useState("idle");
   const [paperUrl, setPaperUrl] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Track how many messages the server has sent — used to detect reconnect catch-up
+  const serverMsgCount = useRef(0);
 
-  // Create session and connect WebSocket
+  // Persist session ID in sessionStorage so navigating between tabs keeps the session
   useEffect(() => {
+    const stored = sessionStorage.getItem("bioChat_sessionId");
+    if (stored) setSessionId(stored);
+  }, []);
+
+  // Create or restore session and connect WebSocket with auto-reconnect
+  useEffect(() => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+
+    function getWsBase() {
+      if (BACKEND_URL.startsWith("http")) {
+        return BACKEND_URL.replace(/^http/, "ws").replace(/\/api\/?$/, "");
+      }
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${window.location.host}`;
+    }
+
+    function connectWs(sid: string) {
+      if (disposed) return;
+      const ws = new WebSocket(`${getWsBase()}/ws/${sid}`);
+
+      ws.onopen = () => {
+        setIsConnected(true);
+        // On reconnect, server replays all messages from the start.
+        // Reset local messages so we rebuild from the server's authoritative list.
+        serverMsgCount.current = 0;
+        setMessages([]);
+      };
+
+      ws.onclose = () => {
+        setIsConnected(false);
+        if (!disposed) {
+          reconnectTimer = setTimeout(() => connectWs(sid), 2000);
+        }
+      };
+
+      ws.onerror = () => {
+        setIsConnected(false);
+        ws.close();
+      };
+
+      ws.onmessage = (event) => {
+        const msg: Message = JSON.parse(event.data);
+        serverMsgCount.current++;
+        setMessages((prev) => [...prev, msg]);
+        if (msg.state) setAgentState(msg.state);
+      };
+
+      wsRef.current = ws;
+    }
+
     async function init() {
       try {
+        // Try to restore existing session from the backend
+        const stored = sessionStorage.getItem("bioChat_sessionId");
+        if (stored) {
+          const checkRes = await fetch(`${BACKEND_URL}/api/sessions/${stored}`);
+          if (checkRes.ok) {
+            // Session still exists on the backend — reconnect
+            setSessionId(stored);
+            connectWs(stored);
+            return;
+          }
+        }
+
+        // No valid session — create a new one
         const res = await fetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
         const data = await res.json();
         const sid = data.session_id;
         setSessionId(sid);
-
-        // Connect WebSocket
-        let wsBase: string;
-        if (BACKEND_URL.startsWith("http")) {
-          wsBase = BACKEND_URL.replace(/^http/, "ws").replace(/\/api\/?$/, "");
-        } else {
-          const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-          wsBase = `${proto}//${window.location.host}`;
-        }
-        const ws = new WebSocket(`${wsBase}/ws/${sid}`);
-
-        ws.onopen = () => setIsConnected(true);
-        ws.onclose = () => setIsConnected(false);
-        ws.onerror = () => setIsConnected(false);
-
-        ws.onmessage = (event) => {
-          const msg: Message = JSON.parse(event.data);
-          setMessages((prev) => [...prev, msg]);
-          if (msg.state) setAgentState(msg.state);
-        };
-
-        wsRef.current = ws;
+        sessionStorage.setItem("bioChat_sessionId", sid);
+        connectWs(sid);
       } catch (err) {
         console.error("Failed to initialize session:", err);
       }
@@ -62,9 +109,24 @@ export default function Home() {
     init();
 
     return () => {
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
   }, []);
+
+  const startNewSession = async () => {
+    try {
+      wsRef.current?.close();
+      const res = await fetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
+      const data = await res.json();
+      sessionStorage.setItem("bioChat_sessionId", data.session_id);
+      // Full reload to cleanly reconnect
+      window.location.reload();
+    } catch (err) {
+      console.error("Failed to create new session:", err);
+    }
+  };
 
   const sendMessage = (content: string) => {
     if (!wsRef.current || !content.trim()) return;
@@ -102,6 +164,13 @@ export default function Home() {
           <span className="text-xs px-2 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
             MVP
           </span>
+          <button
+            onClick={startNewSession}
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            title="Start a new session"
+          >
+            New Session
+          </button>
         </div>
         <div className="flex items-center gap-3">
           <span
@@ -131,16 +200,19 @@ export default function Home() {
 
       {/* Input area */}
       <div className="border-t border-[var(--border)] px-6 py-4">
-        <PaperUpload
-          onUrl={(url) => {
-            setPaperUrl(url);
-            setMessages((prev) => [
-              ...prev,
-              { role: "system", content: `Paper URL attached: ${url}`, type: "system" },
-            ]);
-          }}
-          paperUrl={paperUrl}
-        />
+        <div className="flex items-start gap-4">
+          <PaperUpload
+            onUrl={(url) => {
+              setPaperUrl(url);
+              setMessages((prev) => [
+                ...prev,
+                { role: "system", content: `Paper URL attached: ${url}`, type: "system" },
+              ]);
+            }}
+            paperUrl={paperUrl}
+          />
+          <DataUpload backendUrl={BACKEND_URL} />
+        </div>
 
         <div className="flex gap-3 mt-3">
           <textarea

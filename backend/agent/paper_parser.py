@@ -5,9 +5,11 @@ Two URL types:
 - Everything else (papers, docs) → crawl4ai for clean markdown extraction
 
 Both are sent to Claude to extract: purpose, input, method, output.
+Results are cached to avoid repeat API calls during development.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -20,6 +22,31 @@ import fitz  # PyMuPDF
 import httpx
 
 from config import settings
+
+# --- URL Parse Cache ---
+# Caches Claude API results so repeat URLs skip the LLM call.
+# Cache dir: backend/.url_cache/
+_CACHE_DIR = Path(__file__).parent.parent / ".url_cache"
+_CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _cache_key(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def _get_cached(url: str) -> dict | None:
+    path = _CACHE_DIR / f"{_cache_key(url)}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return None
+    return None
+
+
+def _set_cached(url: str, result: dict):
+    path = _CACHE_DIR / f"{_cache_key(url)}.json"
+    path.write_text(json.dumps(result, indent=2))
 
 PARSE_SYSTEM = """You are a bioinformatics research context parser. Given content from a URL (either a GitHub repository or a science paper), extract a structured summary.
 
@@ -197,13 +224,21 @@ def _pdf_pages_as_images(pdf_path: str, max_pages: int = 30) -> list[str]:
 # --- Main Parser ---
 
 
-async def parse_url(url: str) -> dict:
+async def parse_url(url: str, use_cache: bool = True) -> dict:
     """Parse a URL (GitHub repo or paper) and extract structured research context.
 
     Routes to GitHub API or crawl4ai based on URL type, then sends
     extracted content to Claude for structured parsing into:
     purpose, input, method, output.
+
+    Results are cached so repeat URLs skip the Claude API call.
     """
+    # Check cache first
+    if use_cache:
+        cached = _get_cached(url)
+        if cached:
+            return cached
+
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     if is_github_url(url):
@@ -237,16 +272,19 @@ async def parse_url(url: str) -> dict:
     )
 
     text = response.content[0].text
+    result = None
     try:
-        return json.loads(text)
+        result = json.loads(text)
     except json.JSONDecodeError:
         if "```json" in text:
             json_str = text.split("```json")[1].split("```")[0].strip()
-            return json.loads(json_str)
+            result = json.loads(json_str)
         elif "```" in text:
             json_str = text.split("```")[1].split("```")[0].strip()
-            return json.loads(json_str)
-        return {
+            result = json.loads(json_str)
+
+    if result is None:
+        result = {
             "url_type": "unknown",
             "purpose": text[:500],
             "input": "",
@@ -258,3 +296,7 @@ async def parse_url(url: str) -> dict:
             "datasets": [],
             "summary": text[:500],
         }
+
+    # Cache the result for future calls
+    _set_cached(url, result)
+    return result

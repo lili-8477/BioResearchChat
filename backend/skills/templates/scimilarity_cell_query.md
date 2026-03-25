@@ -15,6 +15,11 @@ tags: [scrnaseq, single-cell, cell-similarity, cell-query, scimilarity, embeddin
 - Disease association analysis, tissue origin mapping, study source identification
 - Requires pretrained model at /data/models/model_v1.1
 
+## Data requirements
+- **Model**: `/data/models/model_v1.1` (pre-cached, 28GB) — required
+- **Atlas**: `/data/atlases/scimilarity` (50GB) — required for full atlas search
+- **User data**: h5ad file with query cells
+
 ## Key decisions
 - k=10000 nearest neighbors by default (adjust for specificity vs coverage)
 - Filter proportions at >0.1% to remove noise
@@ -40,6 +45,14 @@ plt.rcParams["pdf.fonttype"] = 42
 
 os.makedirs("/workspace/output", exist_ok=True)
 
+# --- Patch: stub tiledb.vector_search so scimilarity loads with hnswlib only ---
+import types
+tiledb_stub = types.ModuleType("tiledb")
+tiledb_stub.vector_search = types.ModuleType("tiledb.vector_search")
+import sys
+sys.modules.setdefault("tiledb", tiledb_stub)
+sys.modules.setdefault("tiledb.vector_search", tiledb_stub.vector_search)
+
 # --- 1. Locate pretrained model ---
 MODEL_DIR = "/data/models/model_v1.1"
 if not os.path.exists(MODEL_DIR):
@@ -60,8 +73,14 @@ print("Loading SCimilarity CellQuery model...")
 cq = CellQuery(MODEL_DIR)
 
 # --- 3. Load query data ---
-print("Loading query data...")
-adata = sc.read("/data/input.h5ad")
+# User data is mounted at /data/user/. Find the h5ad file.
+import glob
+h5ad_files = glob.glob("/data/user/*.h5ad")
+if not h5ad_files:
+    raise FileNotFoundError("No .h5ad file found in /data/user/. Upload your data first.")
+INPUT_FILE = h5ad_files[0]
+print(f"Loading query data from {INPUT_FILE}...")
+adata = sc.read(INPUT_FILE)
 print(f"Loaded {adata.n_obs} cells x {adata.n_vars} genes")
 
 # --- 4. Preprocess ---
