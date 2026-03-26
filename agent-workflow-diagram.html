@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Research Agent — Workflow Diagram</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f1117; color: #e0e0e0; height: 100vh; overflow: hidden; }
+
+  .layout { display: grid; grid-template-columns: 280px 1fr; grid-template-rows: 1fr auto; height: 100vh; }
+
+  /* Sidebar */
+  .sidebar { grid-row: 1 / 3; background: #181a20; border-right: 1px solid #2a2d35; overflow-y: auto; padding: 16px; }
+  .sidebar h2 { font-size: 14px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .sidebar h3 { font-size: 12px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 8px; }
+
+  /* Presets */
+  .preset-group { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .preset-btn { background: #252830; border: 1px solid #3a3d45; color: #c9cdd4; padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+  .preset-btn:hover { background: #3a3d45; }
+  .preset-btn.active { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+
+  /* Checkboxes */
+  .check-group label { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 0; cursor: pointer; }
+  .check-group label input { accent-color: #3b82f6; }
+  .color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+  /* Comments */
+  .comment-list { margin-top: 8px; }
+  .comment-item { background: #252830; border: 1px solid #3a3d45; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; position: relative; }
+  .comment-item .target { font-weight: 600; color: #93c5fd; font-size: 11px; }
+  .comment-item .file { color: #6b7280; font-size: 10px; font-family: monospace; }
+  .comment-item .text { margin-top: 4px; color: #c9cdd4; line-height: 1.4; }
+  .comment-item .del-btn { position: absolute; top: 6px; right: 8px; background: none; border: none; color: #6b7280; cursor: pointer; font-size: 14px; line-height: 1; }
+  .comment-item .del-btn:hover { color: #ef4444; }
+  .no-comments { font-size: 12px; color: #4b5563; font-style: italic; }
+
+  /* Canvas */
+  .canvas-area { position: relative; overflow: hidden; background: #13151b; }
+  .canvas-area svg { width: 100%; height: 100%; }
+
+  /* Zoom controls */
+  .zoom-controls { position: absolute; top: 12px; right: 12px; display: flex; gap: 4px; }
+  .zoom-btn { width: 32px; height: 32px; background: #252830; border: 1px solid #3a3d45; color: #c9cdd4; border-radius: 6px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; }
+  .zoom-btn:hover { background: #3a3d45; }
+
+  /* Prompt bar */
+  .prompt-bar { grid-column: 2; background: #181a20; border-top: 1px solid #2a2d35; padding: 12px 16px; display: flex; align-items: flex-start; gap: 12px; max-height: 180px; }
+  .prompt-text { flex: 1; font-family: monospace; font-size: 12px; color: #9ca3af; line-height: 1.5; white-space: pre-wrap; overflow-y: auto; max-height: 156px; }
+  .copy-btn { background: #3b82f6; color: #fff; border: none; padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+  .copy-btn:hover { background: #2563eb; }
+  .copy-btn.copied { background: #10b981; }
+
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: #1e2028; border: 1px solid #3a3d45; border-radius: 10px; padding: 20px; width: 380px; }
+  .modal h3 { font-size: 15px; margin-bottom: 2px; }
+  .modal .modal-file { font-family: monospace; font-size: 11px; color: #6b7280; margin-bottom: 12px; }
+  .modal textarea { width: 100%; height: 80px; background: #252830; border: 1px solid #3a3d45; border-radius: 6px; color: #e0e0e0; padding: 8px; font-size: 13px; resize: vertical; font-family: system-ui; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .modal-actions button { padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid #3a3d45; }
+  .modal-actions .cancel { background: #252830; color: #c9cdd4; }
+  .modal-actions .save { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+
+  /* Legend */
+  .legend { position: absolute; bottom: 12px; left: 12px; background: #181a20ee; border: 1px solid #2a2d35; border-radius: 8px; padding: 10px 14px; font-size: 11px; }
+  .legend-title { font-weight: 600; color: #9ca3af; margin-bottom: 6px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+  .legend-line { width: 24px; height: 2px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <h2>Agent Workflow</h2>
+
+    <h3>View</h3>
+    <div class="preset-group" id="presets"></div>
+
+    <h3>Layers</h3>
+    <div class="check-group" id="layers"></div>
+
+    <h3>Connections</h3>
+    <div class="check-group" id="connTypes"></div>
+
+    <h3>Comments <span id="commentCount" style="color:#6b7280">(0)</span></h3>
+    <div class="comment-list" id="commentList">
+      <div class="no-comments">Click a node to add feedback</div>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="canvas-area" id="canvasArea">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="zoom-controls">
+      <button class="zoom-btn" onclick="zoomIn()">+</button>
+      <button class="zoom-btn" onclick="zoomOut()">&minus;</button>
+      <button class="zoom-btn" onclick="zoomReset()" style="font-size:12px">1:1</button>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <!-- Prompt bar -->
+  <div class="prompt-bar">
+    <div class="prompt-text" id="promptText">Click components in the diagram to add comments. Your feedback will appear here as an actionable prompt.</div>
+    <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy Prompt</button>
+  </div>
+</div>
+
+<!-- Comment modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3 id="modalTitle"></h3>
+    <div class="modal-file" id="modalFile"></div>
+    <textarea id="modalText" placeholder="Add your feedback or suggestion..."></textarea>
+    <div class="modal-actions">
+      <button class="cancel" onclick="closeModal()">Cancel</button>
+      <button class="save" onclick="saveComment()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+const state = {
+  activePreset: 'full',
+  layers: { ui: true, orchestrator: true, agents: true, skills: true, execution: true, external: true },
+  connTypes: { 'data-flow': true, 'llm-call': true, 'docker-op': true, 'user-action': true },
+  comments: [],
+  zoom: 1,
+  panX: 0, panY: 0,
+  modalNode: null,
+};
+
+// ── Nodes ──
+const nodes = [
+  // UI Layer
+  { id: 'browser',       label: 'Chat UI',             subtitle: 'frontend/app/page.tsx',       x: 420, y: 30,  w: 150, h: 48, layer: 'ui',           color: '#dbeafe' },
+  { id: 'plan-review',   label: 'Plan Review',         subtitle: 'frontend/components/PlanReview.tsx', x: 220, y: 30,  w: 140, h: 48, layer: 'ui',    color: '#dbeafe' },
+  { id: 'results-view',  label: 'Results View',        subtitle: 'frontend/components/ResultsView.tsx', x: 620, y: 30, w: 150, h: 48, layer: 'ui',   color: '#dbeafe' },
+
+  // Orchestrator Layer
+  { id: 'websocket',     label: 'WebSocket',           subtitle: 'backend/main.py',             x: 420, y: 130, w: 150, h: 48, layer: 'orchestrator', color: '#fef3c7' },
+  { id: 'orchestrator',  label: 'Orchestrator',        subtitle: 'backend/agent/orchestrator.py', x: 420, y: 210, w: 170, h: 55, layer: 'orchestrator', color: '#fef3c7' },
+  { id: 'triage',        label: 'Conversational Triage', subtitle: '_converse() / _is_analysis_ready()', x: 180, y: 210, w: 185, h: 48, layer: 'orchestrator', color: '#fef9c4' },
+
+  // Agent Layer
+  { id: 'parser',        label: 'URL Parser',          subtitle: 'backend/agent/paper_parser.py', x: 100, y: 320, w: 150, h: 48, layer: 'agents',    color: '#dcfce7' },
+  { id: 'planner',       label: 'Planner',             subtitle: 'backend/agent/planner.py',     x: 310, y: 320, w: 150, h: 48, layer: 'agents',     color: '#dcfce7' },
+  { id: 'code-writer',   label: 'Code Writer',         subtitle: 'backend/agent/code_writer.py', x: 520, y: 320, w: 150, h: 48, layer: 'agents',     color: '#dcfce7' },
+  { id: 'evaluator',     label: 'Evaluator',           subtitle: 'backend/agent/evaluator.py',   x: 730, y: 320, w: 150, h: 48, layer: 'agents',     color: '#dcfce7' },
+  { id: 'image-resolver',label: 'Image Resolver',      subtitle: 'backend/agent/image_resolver.py', x: 520, y: 400, w: 160, h: 48, layer: 'agents',  color: '#dcfce7' },
+
+  // Skills & Memory Layer
+  { id: 'skill-mgr',     label: 'Skill Manager',       subtitle: 'backend/skills/manager.py',    x: 140, y: 440, w: 155, h: 48, layer: 'skills',     color: '#f3e8ff' },
+  { id: 'skill-templates',label: 'Skill Templates',    subtitle: 'backend/skills/templates/*.md', x: 140, y: 520, w: 155, h: 48, layer: 'skills',    color: '#ede9fe' },
+  { id: 'memory-mgr',    label: 'Memory Manager',      subtitle: 'backend/memory/manager.py',    x: 350, y: 440, w: 155, h: 48, layer: 'skills',     color: '#f3e8ff' },
+  { id: 'lessons',       label: 'Lessons (QMD)',        subtitle: 'backend/memory/lessons/*.md',  x: 350, y: 520, w: 155, h: 48, layer: 'skills',     color: '#ede9fe' },
+  { id: 'analysis-log',  label: 'Analysis Log',        subtitle: 'backend/agent/analysis_log.py', x: 730, y: 440, w: 150, h: 48, layer: 'skills',    color: '#f3e8ff' },
+
+  // Execution Layer
+  { id: 'executor',      label: 'Docker Executor',     subtitle: 'backend/container_runtime/executor.py', x: 580, y: 540, w: 170, h: 48, layer: 'execution', color: '#fce7f3' },
+  { id: 'image-cache',   label: 'Image Cache',         subtitle: 'backend/container_runtime/image_cache.py', x: 770, y: 540, w: 155, h: 48, layer: 'execution', color: '#fce7f3' },
+  { id: 'data-api',      label: 'Database API',        subtitle: 'backend/data/api.py',          x: 580, y: 620, w: 150, h: 48, layer: 'execution',  color: '#fce7f3' },
+
+  // External Layer
+  { id: 'claude-api',    label: 'Claude API',           subtitle: 'Anthropic (remote)',           x: 100, y: 620, w: 140, h: 48, layer: 'external',   color: '#fbcfe8' },
+  { id: 'github-api',    label: 'GitHub API',           subtitle: 'github.com',                  x: 100, y: 700, w: 140, h: 48, layer: 'external',   color: '#fbcfe8' },
+  { id: 'crawl4ai',      label: 'crawl4ai',             subtitle: 'Web scraper',                 x: 270, y: 700, w: 130, h: 48, layer: 'external',   color: '#fbcfe8' },
+  { id: 'docker',        label: 'Docker Engine',        subtitle: 'unix:///var/run/docker.sock',  x: 770, y: 620, w: 155, h: 48, layer: 'external',  color: '#fbcfe8' },
+  { id: 'geo-tcga',      label: 'GEO / TCGA / GDC',    subtitle: 'NCBI / NCI (remote)',          x: 580, y: 700, w: 165, h: 48, layer: 'external',  color: '#fbcfe8' },
+];
+
+// ── Connections ──
+const connections = [
+  // User flow
+  { from: 'browser',      to: 'websocket',     type: 'user-action', label: 'WebSocket' },
+  { from: 'websocket',    to: 'orchestrator',   type: 'data-flow',  label: 'message' },
+  { from: 'orchestrator', to: 'websocket',      type: 'data-flow',  label: 'stream' },
+  { from: 'websocket',    to: 'plan-review',    type: 'user-action', label: 'plan' },
+  { from: 'websocket',    to: 'results-view',   type: 'user-action', label: 'results' },
+  { from: 'plan-review',  to: 'websocket',      type: 'user-action', label: 'approve/modify' },
+
+  // Triage
+  { from: 'orchestrator', to: 'triage',         type: 'data-flow',  label: 'triage' },
+  { from: 'triage',       to: 'orchestrator',   type: 'data-flow',  label: 'ready' },
+
+  // Agent flow
+  { from: 'orchestrator', to: 'parser',         type: 'data-flow',  label: '1. parse URL' },
+  { from: 'orchestrator', to: 'skill-mgr',      type: 'data-flow',  label: '2. search skills' },
+  { from: 'orchestrator', to: 'memory-mgr',     type: 'data-flow',  label: '2. search lessons' },
+  { from: 'orchestrator', to: 'planner',         type: 'data-flow', label: '3. plan' },
+  { from: 'orchestrator', to: 'image-resolver',  type: 'data-flow', label: '4. resolve env' },
+  { from: 'orchestrator', to: 'code-writer',     type: 'data-flow', label: '5. write code' },
+  { from: 'orchestrator', to: 'evaluator',       type: 'data-flow', label: '7. evaluate' },
+  { from: 'orchestrator', to: 'analysis-log',    type: 'data-flow', label: '8. log' },
+
+  // LLM calls
+  { from: 'parser',       to: 'claude-api',     type: 'llm-call',   label: 'parse' },
+  { from: 'planner',      to: 'claude-api',     type: 'llm-call',   label: 'plan' },
+  { from: 'code-writer',  to: 'claude-api',     type: 'llm-call',   label: 'generate' },
+  { from: 'evaluator',    to: 'claude-api',     type: 'llm-call',   label: 'evaluate' },
+  { from: 'memory-mgr',   to: 'claude-api',     type: 'llm-call',   label: 'extract lessons' },
+
+  // URL parsing externals
+  { from: 'parser',       to: 'github-api',     type: 'data-flow',  label: 'repo metadata' },
+  { from: 'parser',       to: 'crawl4ai',       type: 'data-flow',  label: 'scrape' },
+
+  // Skills & Memory
+  { from: 'skill-mgr',    to: 'skill-templates', type: 'data-flow', label: 'load' },
+  { from: 'memory-mgr',   to: 'lessons',         type: 'data-flow', label: 'search' },
+
+  // Docker operations
+  { from: 'image-resolver', to: 'image-cache',  type: 'docker-op',  label: 'lookup/commit' },
+  { from: 'image-cache',    to: 'docker',       type: 'docker-op',  label: 'docker build' },
+  { from: 'executor',       to: 'docker',       type: 'docker-op',  label: 'docker run' },
+  { from: 'orchestrator',   to: 'executor',     type: 'data-flow',  label: '6. execute' },
+
+  // Data
+  { from: 'orchestrator',   to: 'data-api',     type: 'data-flow',  label: 'mount data' },
+  { from: 'data-api',       to: 'geo-tcga',     type: 'data-flow',  label: 'download' },
+  { from: 'data-api',       to: 'executor',     type: 'docker-op',  label: '-v mount' },
+
+  // Self-correction loop
+  { from: 'evaluator',      to: 'code-writer',  type: 'data-flow',  label: 'fix code (retry)' },
+];
+
+// ── Layer definitions ──
+const layerDefs = [
+  { id: 'ui',           label: 'Web UI',            color: '#93c5fd' },
+  { id: 'orchestrator', label: 'Orchestrator',       color: '#fcd34d' },
+  { id: 'agents',       label: 'Agent Modules',      color: '#86efac' },
+  { id: 'skills',       label: 'Skills & Memory',    color: '#c4b5fd' },
+  { id: 'execution',    label: 'Execution Layer',    color: '#f9a8d4' },
+  { id: 'external',     label: 'External Services',  color: '#f472b6' },
+];
+
+// ── Connection type definitions ──
+const connTypeDefs = [
+  { id: 'data-flow',    label: 'Data Flow',    color: '#3b82f6', dash: '' },
+  { id: 'llm-call',     label: 'LLM Call',     color: '#f59e0b', dash: '6,3' },
+  { id: 'docker-op',    label: 'Docker Op',    color: '#10b981', dash: '4,4' },
+  { id: 'user-action',  label: 'User Action',  color: '#a78bfa', dash: '8,4' },
+];
+
+// ── Presets ──
+const presets = {
+  full:       { label: 'Full System',   layers: { ui: true, orchestrator: true, agents: true, skills: true, execution: true, external: true } },
+  agent:      { label: 'Agent Loop',    layers: { ui: false, orchestrator: true, agents: true, skills: true, execution: false, external: false } },
+  execution:  { label: 'Execution',     layers: { ui: false, orchestrator: true, agents: false, skills: false, execution: true, external: true } },
+  llm:        { label: 'LLM Calls',     layers: { ui: false, orchestrator: true, agents: true, skills: false, execution: false, external: true } },
+  userflow:   { label: 'User Flow',     layers: { ui: true, orchestrator: true, agents: false, skills: false, execution: false, external: false } },
+};
+
+// ── Pan & zoom ──
+let isDragging = false, dragStartX, dragStartY, startPanX, startPanY;
+const canvasArea = document.getElementById('canvasArea');
+
+canvasArea.addEventListener('mousedown', e => {
+  if (e.target.closest('.zoom-btn') || e.target.closest('.legend')) return;
+  isDragging = true; dragStartX = e.clientX; dragStartY = e.clientY;
+  startPanX = state.panX; startPanY = state.panY;
+  canvasArea.style.cursor = 'grabbing';
+});
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  state.panX = startPanX + (e.clientX - dragStartX) / state.zoom;
+  state.panY = startPanY + (e.clientY - dragStartY) / state.zoom;
+  renderDiagram();
+});
+window.addEventListener('mouseup', () => { isDragging = false; canvasArea.style.cursor = ''; });
+canvasArea.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  state.zoom = Math.max(0.3, Math.min(3, state.zoom * delta));
+  renderDiagram();
+}, { passive: false });
+
+function zoomIn() { state.zoom = Math.min(3, state.zoom * 1.2); renderDiagram(); }
+function zoomOut() { state.zoom = Math.max(0.3, state.zoom / 1.2); renderDiagram(); }
+function zoomReset() { state.zoom = 1; state.panX = 0; state.panY = 0; renderDiagram(); }
+
+// ── Render ──
+function renderDiagram() {
+  const svg = document.getElementById('svg');
+  const rect = canvasArea.getBoundingClientRect();
+  const vw = rect.width / state.zoom;
+  const vh = rect.height / state.zoom;
+  const ox = -state.panX;
+  const oy = -state.panY;
+  svg.setAttribute('viewBox', `${ox} ${oy} ${vw} ${vh}`);
+
+  let html = '';
+
+  // Arrow markers
+  connTypeDefs.forEach(ct => {
+    html += `<marker id="arrow-${ct.id}" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="${ct.color}"/>
+    </marker>`;
+  });
+
+  // Connections
+  const visibleLayers = new Set(Object.keys(state.layers).filter(l => state.layers[l]));
+  connections.forEach(c => {
+    if (!state.connTypes[c.type]) return;
+    const fromNode = nodes.find(n => n.id === c.from);
+    const toNode = nodes.find(n => n.id === c.to);
+    if (!fromNode || !toNode) return;
+    if (!visibleLayers.has(fromNode.layer) || !visibleLayers.has(toNode.layer)) return;
+
+    const ct = connTypeDefs.find(t => t.id === c.type);
+    const fx = fromNode.x + fromNode.w / 2;
+    const fy = fromNode.y + fromNode.h / 2;
+    const tx = toNode.x + toNode.w / 2;
+    const ty = toNode.y + toNode.h / 2;
+
+    // Edge points
+    const angle = Math.atan2(ty - fy, tx - fx);
+    const x1 = fx, y1 = fy;
+    const x2 = tx, y2 = ty;
+
+    // Bezier curve
+    const dx = x2 - x1, dy = y2 - y1;
+    const cx1 = x1 + dx * 0.3, cy1 = y1;
+    const cx2 = x2 - dx * 0.3, cy2 = y2;
+
+    const dashAttr = ct.dash ? `stroke-dasharray="${ct.dash}"` : '';
+    html += `<path d="M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${x2},${y2}"
+      fill="none" stroke="${ct.color}" stroke-width="1.5" ${dashAttr}
+      marker-end="url(#arrow-${ct.id})" opacity="0.6"/>`;
+
+    // Label
+    if (c.label) {
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 6;
+      html += `<text x="${mx}" y="${my}" text-anchor="middle" fill="${ct.color}" font-size="9" font-family="system-ui" opacity="0.8">${c.label}</text>`;
+    }
+  });
+
+  // Nodes
+  const commentedNodes = new Set(state.comments.map(c => c.target));
+  nodes.forEach(n => {
+    if (!visibleLayers.has(n.layer)) return;
+    const hasComment = commentedNodes.has(n.id);
+    const stroke = hasComment ? '#3b82f6' : '#3a3d45';
+    const strokeW = hasComment ? 2.5 : 1;
+
+    html += `<g class="node" data-id="${n.id}" style="cursor:pointer" onclick="openModal('${n.id}')">
+      <rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="8"
+        fill="${n.color}15" stroke="${stroke}" stroke-width="${strokeW}"/>
+      <text x="${n.x + n.w/2}" y="${n.y + 20}" text-anchor="middle" fill="${n.color}" font-size="12" font-weight="600" font-family="system-ui">${n.label}</text>
+      <text x="${n.x + n.w/2}" y="${n.y + 34}" text-anchor="middle" fill="#6b7280" font-size="9" font-family="monospace">${n.subtitle}</text>`;
+    if (hasComment) {
+      html += `<circle cx="${n.x + n.w - 6}" cy="${n.y + 6}" r="5" fill="#3b82f6"/>
+        <text x="${n.x + n.w - 6}" y="${n.y + 9.5}" text-anchor="middle" fill="#fff" font-size="7" font-weight="700">${state.comments.filter(c=>c.target===n.id).length}</text>`;
+    }
+    html += `</g>`;
+  });
+
+  svg.innerHTML = html;
+}
+
+// ── Modal ──
+function openModal(nodeId) {
+  if (isDragging) return;
+  const n = nodes.find(nd => nd.id === nodeId);
+  if (!n) return;
+  state.modalNode = n;
+  document.getElementById('modalTitle').textContent = n.label;
+  document.getElementById('modalFile').textContent = n.subtitle;
+  document.getElementById('modalText').value = '';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('modalText').focus(), 50);
+}
+function closeModal() { document.getElementById('modal').classList.remove('open'); state.modalNode = null; }
+function saveComment() {
+  const text = document.getElementById('modalText').value.trim();
+  if (!text || !state.modalNode) return;
+  state.comments.push({
+    id: Date.now(),
+    target: state.modalNode.id,
+    targetLabel: state.modalNode.label,
+    targetFile: state.modalNode.subtitle,
+    text,
+  });
+  closeModal();
+  updateAll();
+}
+document.getElementById('modal').addEventListener('click', e => { if (e.target === document.getElementById('modal')) closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Enter' && e.metaKey && document.getElementById('modal').classList.contains('open')) saveComment();
+});
+
+// ── Comments list ──
+function renderComments() {
+  const el = document.getElementById('commentList');
+  const countEl = document.getElementById('commentCount');
+  countEl.textContent = `(${state.comments.length})`;
+  if (state.comments.length === 0) {
+    el.innerHTML = '<div class="no-comments">Click a node to add feedback</div>';
+    return;
+  }
+  el.innerHTML = state.comments.map(c => `
+    <div class="comment-item">
+      <button class="del-btn" onclick="deleteComment(${c.id})">&times;</button>
+      <div class="target">${c.targetLabel}</div>
+      <div class="file">${c.targetFile}</div>
+      <div class="text">${escHtml(c.text)}</div>
+    </div>
+  `).join('');
+}
+function deleteComment(id) {
+  state.comments = state.comments.filter(c => c.id !== id);
+  updateAll();
+}
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Prompt ──
+function updatePrompt() {
+  const el = document.getElementById('promptText');
+  if (state.comments.length === 0) {
+    el.textContent = 'Click components in the diagram to add comments. Your feedback will appear here as an actionable prompt.';
+    return;
+  }
+
+  const visibleLayerNames = layerDefs.filter(l => state.layers[l.id]).map(l => l.label);
+  const parts = [`This is the Research Agent (bioChat) architecture, focusing on: ${visibleLayerNames.join(', ')}.\n\nFeedback on specific components:\n`];
+
+  state.comments.forEach(c => {
+    parts.push(`**${c.targetLabel}** (${c.targetFile}):\n${c.text}\n`);
+  });
+
+  el.textContent = parts.join('\n');
+}
+
+function copyPrompt() {
+  const text = document.getElementById('promptText').textContent;
+  navigator.clipboard.writeText(text);
+  const btn = document.getElementById('copyBtn');
+  btn.textContent = 'Copied!'; btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.classList.remove('copied'); }, 1500);
+}
+
+// ── Build controls ──
+function buildControls() {
+  // Presets
+  const presetEl = document.getElementById('presets');
+  presetEl.innerHTML = Object.entries(presets).map(([id, p]) =>
+    `<button class="preset-btn ${id === state.activePreset ? 'active' : ''}" data-preset="${id}">${p.label}</button>`
+  ).join('');
+  presetEl.addEventListener('click', e => {
+    const btn = e.target.closest('.preset-btn');
+    if (!btn) return;
+    const id = btn.dataset.preset;
+    state.activePreset = id;
+    state.layers = { ...presets[id].layers };
+    buildControls();
+    updateAll();
+  });
+
+  // Layers
+  const layerEl = document.getElementById('layers');
+  layerEl.innerHTML = layerDefs.map(l =>
+    `<label><input type="checkbox" data-layer="${l.id}" ${state.layers[l.id] ? 'checked' : ''}>
+    <span class="color-dot" style="background:${l.color}"></span>${l.label}</label>`
+  ).join('');
+  layerEl.addEventListener('change', e => {
+    const cb = e.target;
+    if (!cb.dataset.layer) return;
+    state.layers[cb.dataset.layer] = cb.checked;
+    state.activePreset = '';
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+    updateAll();
+  });
+
+  // Connection types
+  const connEl = document.getElementById('connTypes');
+  connEl.innerHTML = connTypeDefs.map(ct =>
+    `<label><input type="checkbox" data-conn="${ct.id}" ${state.connTypes[ct.id] ? 'checked' : ''}>
+    <span class="color-dot" style="background:${ct.color}"></span>${ct.label}</label>`
+  ).join('');
+  connEl.addEventListener('change', e => {
+    const cb = e.target;
+    if (!cb.dataset.conn) return;
+    state.connTypes[cb.dataset.conn] = cb.checked;
+    updateAll();
+  });
+
+  // Legend
+  const legendEl = document.getElementById('legend');
+  legendEl.innerHTML = `<div class="legend-title">Connections</div>` +
+    connTypeDefs.map(ct => {
+      const dashStyle = ct.dash ? `background:repeating-linear-gradient(90deg, ${ct.color} 0, ${ct.color} 4px, transparent 4px, transparent 7px)` : `background:${ct.color}`;
+      return `<div class="legend-item"><span class="legend-line" style="${dashStyle};height:2px"></span>${ct.label}</div>`;
+    }).join('');
+}
+
+function updateAll() {
+  renderDiagram();
+  renderComments();
+  updatePrompt();
+}
+
+// ── Init ──
+buildControls();
+updateAll();
+</script>
+</body>
+</html>

@@ -22,6 +22,7 @@ import fitz  # PyMuPDF
 import httpx
 
 from config import settings
+from agent.api_retry import api_call_with_retry
 
 # --- URL Parse Cache ---
 # Caches Claude API results so repeat URLs skip the LLM call.
@@ -264,7 +265,8 @@ async def parse_url(url: str, use_cache: bool = True) -> dict:
         else:
             raise ValueError(f"Could not fetch content from {url}")
 
-    response = await client.messages.create(
+    response = await api_call_with_retry(
+        client,
         model=settings.CLAUDE_MODEL,
         max_tokens=4096,
         system=PARSE_SYSTEM,

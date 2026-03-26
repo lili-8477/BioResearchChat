@@ -5,6 +5,7 @@ import json
 import anthropic
 
 from config import settings
+from agent.api_retry import api_call_with_retry
 
 PLAN_SYSTEM = """You are a bioinformatics analysis planner. Given extracted paper information and a user's research question, generate a detailed analysis plan.
 
@@ -130,7 +131,8 @@ async def generate_plan(
     prompt_parts.append("\nGenerate a detailed analysis plan.")
     prompt = "\n".join(prompt_parts)
 
-    response = await client.messages.create(
+    response = await api_call_with_retry(
+        client,
         model=settings.CLAUDE_MODEL,
         max_tokens=4096,
         system=PLAN_SYSTEM,

@@ -23,6 +23,7 @@ from agent.analysis_log import write_analysis_log
 class SessionState(str, Enum):
     IDLE = "idle"
     CONVERSING = "conversing"
+    READY = "ready"
     PARSING = "parsing"
     PLANNING = "planning"
     AWAITING_APPROVAL = "awaiting_approval"
@@ -141,15 +142,19 @@ class Orchestrator:
             if url_match:
                 paper_url = url_match.group(0).rstrip(".,;:!?)")
 
-        # If we're in a conversation, continue guiding the user
+        # If we're in a conversation, continue the checklist flow.
         if session.state == SessionState.CONVERSING:
-            # Check if user now has enough context to start analysis
-            if paper_url or self._is_analysis_ready(session, content):
-                async for msg in self._start_analysis(session, content, paper_url):
-                    yield msg
-            else:
-                async for msg in self._converse(session, content):
-                    yield msg
+            async for msg in self._converse(session, content):
+                yield msg
+            return
+
+        # Checklists done — user is adding details or saying "go"
+        if session.state == SessionState.READY:
+            all_user_text = " ".join(
+                m.content for m in session.messages if m.role == "user"
+            )
+            async for msg in self._start_analysis(session, all_user_text, paper_url):
+                yield msg
             return
 
         # Triage: decide whether to start analysis or converse first
@@ -205,59 +210,130 @@ class Orchestrator:
 
         return False
 
+    def _checklist_step(self, session: Session) -> int:
+        """Count how many checklists have been answered.
+
+        A checklist is 'answered' when a user message appears after it.
+        Step 0: data type, Step 1: analysis method, Step 2: expected output.
+        Returns 3 when all answered → triggers analysis.
+        """
+        checklists_answered = 0
+        waiting_for_answer = False
+        for m in session.messages:
+            if m.msg_type == "checklist":
+                waiting_for_answer = True
+            elif m.role == "user" and waiting_for_answer:
+                checklists_answered += 1
+                waiting_for_answer = False
+        return min(checklists_answered, 3)
+
     async def _converse(
         self,
         session: Session,
         content: str,
     ) -> AsyncGenerator[Message, None]:
-        """Guide the user to clarify their request before starting analysis."""
+        """Guide the user through 3 checklists: data type, analysis method, expected output."""
         session.state = SessionState.CONVERSING
-        content_lower = content.lower().strip()
 
-        # Build a helpful response based on what's missing
-        # Check what we know so far from conversation history
-        has_data = any(
-            re.search(r'GSE\d+|GSM\d+|SRR\d+|PRJNA\d+|TCGA|\.h5ad|\.csv|\.fastq', m.content, re.IGNORECASE)
-            for m in session.messages if m.role == "user"
-        )
-        has_analysis_type = any(
-            re.search(r'differential|clustering|enrichment|peak|trajectory|heatmap|expression', m.content, re.IGNORECASE)
-            for m in session.messages if m.role == "user"
-        )
+        step = self._checklist_step(session)
 
-        # Simple greetings
-        greetings = ['hi', 'hello', 'hey', 'help', 'what can you do']
-        if any(content_lower.startswith(g) for g in greetings) or content_lower in greetings:
+        # Step 0: What data type?
+        if step == 0:
+            # Greeting for first interaction
+            if len([m for m in session.messages if m.role == "user"]) <= 1:
+                yield session.add_message(
+                    "assistant",
+                    "Hi! Let's set up your analysis.",
+                )
             yield session.add_message(
                 "assistant",
-                "Hi! I'm a bioinformatics research agent. I can help you:\n\n"
-                "- **Analyze a paper** — paste a paper URL and I'll extract the methods and reproduce the analysis\n"
-                "- **Run an analysis** — describe what you want to do (e.g., \"Run DESeq2 differential expression on GSE12345\")\n"
-                "- **Explore data** — tell me about your dataset and research question\n\n"
-                "What would you like to work on?",
+                "What data type?",
+                msg_type="checklist",
+                data={
+                    "id": "data_type",
+                    "title": "What type of data are you working with?",
+                    "options": [
+                        {"value": "scrna", "label": "Single-cell RNA-seq"},
+                        {"value": "bulk_rna", "label": "Bulk RNA-seq"},
+                        {"value": "chipseq", "label": "ChIP-seq / ATAC-seq"},
+                        {"value": "spatial", "label": "Spatial transcriptomics"},
+                    ],
+                    "allow_custom": True,
+                    "custom_placeholder": "Or type your data type...",
+                },
             )
             return
 
-        # User asked something but it's vague
-        response_parts = ["I'd like to help! To set up the right analysis, could you tell me:\n"]
-
-        if not has_data:
-            response_parts.append(
-                "- **What data** are you working with? (e.g., a GEO accession like GSE12345, "
-                "a file path, or a paper URL)"
+        # Step 1: What analysis method?
+        if step == 1:
+            yield session.add_message(
+                "assistant",
+                "What analysis method?",
+                msg_type="checklist",
+                data={
+                    "id": "method",
+                    "title": "How should I analyze it? (or paste a paper/GitHub URL)",
+                    "options": [
+                        {"value": "de", "label": "Differential expression"},
+                        {"value": "clustering", "label": "Clustering & visualization"},
+                        {"value": "enrichment", "label": "Pathway / gene set enrichment"},
+                        {"value": "peak_calling", "label": "Peak calling & signal analysis"},
+                    ],
+                    "allow_custom": True,
+                    "custom_placeholder": "Or type a method / paste a URL...",
+                },
             )
-        if not has_analysis_type:
-            response_parts.append(
-                "- **What analysis** do you want to run? (e.g., differential expression, "
-                "clustering, peak calling, trajectory analysis)"
-            )
+            return
 
-        if not has_data and not has_analysis_type:
-            response_parts.append(
-                "\nOr simply paste a **paper URL** and I'll extract the methods automatically."
+        # Step 2: Expected output?
+        if step == 2:
+            yield session.add_message(
+                "assistant",
+                "What output do you expect?",
+                msg_type="checklist",
+                data={
+                    "id": "output",
+                    "title": "What output do you want?",
+                    "options": [
+                        {"value": "plots", "label": "Plots (UMAP, volcano, heatmap)"},
+                        {"value": "tables", "label": "Tables (DEG list, stats)"},
+                        {"value": "report", "label": "Full report (plots + tables + summary)"},
+                        {"value": "files", "label": "Processed files (h5ad, bigWig, BED)"},
+                    ],
+                    "allow_custom": True,
+                    "custom_placeholder": "Or describe what you need...",
+                },
             )
+            return
 
-        yield session.add_message("assistant", "\n".join(response_parts))
+        # All 3 answered — show summary, ask user to add details or proceed
+        session.state = SessionState.READY
+
+        # Collect checklist answers
+        answers = []
+        waiting = False
+        for m in session.messages:
+            if m.msg_type == "checklist":
+                waiting = True
+            elif m.role == "user" and waiting:
+                answers.append(m.content)
+                waiting = False
+
+        labels = ["Data", "Method", "Output"]
+        summary_lines = []
+        for i, ans in enumerate(answers[:3]):
+            label = labels[i] if i < len(labels) else f"Step {i+1}"
+            summary_lines.append(f"- **{label}:** {ans}")
+
+        summary = "\n".join(summary_lines)
+        yield session.add_message(
+            "assistant",
+            f"Got it! Here's what I have so far:\n\n{summary}\n\n"
+            "You can now:\n"
+            "- **Paste a paper or GitHub URL** for me to extract methods from\n"
+            "- **Add more details** in the chat (dataset IDs, comparisons, parameters)\n"
+            "- Or just type **go** and I'll plan the analysis with what I have",
+        )
 
     async def _start_analysis(
         self,
@@ -434,19 +510,35 @@ class Orchestrator:
             return
 
         # Step 6-8: Execute and evaluate loop
+        total_attempts = session.max_retries + 1
         session.retry_count = 0
         while session.retry_count <= session.max_retries:
             session.state = SessionState.EXECUTING
             attempt = session.retry_count + 1
-            if attempt > 1:
-                yield session.add_message("assistant", f"Retry attempt {attempt}/{session.max_retries + 1}...", msg_type="system")
-            else:
-                yield session.add_message("assistant", "Executing analysis...", msg_type="system")
+            yield session.add_message(
+                "assistant",
+                f"Running analysis (attempt {attempt}/{total_attempts})..."
+                if attempt > 1 else
+                f"Running analysis...",
+                msg_type="system",
+            )
 
             output_lines = []
+            # Buffer for streaming: accumulate lines and flush periodically
+            _stream_buffer = []
+            _last_flush = [0.0]  # mutable ref for closure
 
             async def on_output(line: str):
+                import time
                 output_lines.append(line)
+                _stream_buffer.append(line)
+                # Flush every 2 seconds or every 20 lines to avoid message spam
+                now = time.time()
+                if now - _last_flush[0] > 2.0 or len(_stream_buffer) >= 20:
+                    chunk = "".join(_stream_buffer)
+                    _stream_buffer.clear()
+                    _last_flush[0] = now
+                    session.add_message("assistant", chunk.rstrip(), msg_type="output")
 
             try:
                 result = await self.executor.run_script(
@@ -457,6 +549,10 @@ class Orchestrator:
                     data_mounts=data_mounts,
                     on_output=on_output,
                 )
+                # Flush remaining buffer
+                if _stream_buffer:
+                    session.add_message("assistant", "".join(_stream_buffer).rstrip(), msg_type="output")
+                    _stream_buffer.clear()
             except Exception as e:
                 session.state = SessionState.FAILED
                 yield session.add_message("assistant", f"Execution error: {e}", msg_type="error")
@@ -515,15 +611,34 @@ class Orchestrator:
 
             # Step 8: Evaluate
             session.state = SessionState.EVALUATING
-            yield session.add_message("assistant", "Evaluating results...", msg_type="system")
-
-            evaluation = await evaluate_output(
-                stdout=result["stdout"],
-                stderr=result["stderr"],
-                exit_code=result["exit_code"],
-                output_files=result["output_files"],
-                plan=plan,
+            exit_status = "exit 0" if result["exit_code"] == 0 else f"exit {result['exit_code']}"
+            n_files = len(result["output_files"])
+            yield session.add_message(
+                "assistant",
+                f"Evaluating results ({exit_status}, {n_files} output file{'s' if n_files != 1 else ''})...",
+                msg_type="system",
             )
+
+            try:
+                evaluation = await evaluate_output(
+                    stdout=result["stdout"],
+                    stderr=result["stderr"],
+                    exit_code=result["exit_code"],
+                    output_files=result["output_files"],
+                    plan=plan,
+                )
+            except Exception as eval_err:
+                # Evaluator failed (API down) — use simple heuristic
+                has_outputs = len(result["output_files"]) > 0
+                evaluation = {
+                    "success": result["exit_code"] == 0 and has_outputs,
+                    "summary": f"Evaluation API unavailable ({eval_err}). "
+                               f"Exit code: {result['exit_code']}, "
+                               f"output files: {len(result['output_files'])}.",
+                    "outputs": result["output_files"],
+                    "errors": [],
+                    "suggestion": None if result["exit_code"] == 0 else "Check error output.",
+                }
 
             if evaluation.get("success"):
                 session.state = SessionState.COMPLETED
@@ -620,10 +735,20 @@ class Orchestrator:
                 return
 
             # Fix code (with lessons context to avoid repeating mistakes)
-            yield session.add_message("assistant", f"Fixing code: {evaluation.get('suggestion', '')}", msg_type="system")
-            error_text = result["stderr"] or result["stdout"]
+            suggestion = evaluation.get("suggestion", "")
+            yield session.add_message(
+                "assistant",
+                f"Fixing code (attempt {attempt}/{total_attempts}): {suggestion}",
+                msg_type="system",
+            )
+            # Build focused error context: evaluator suggestion + last 2000 chars of stderr
+            raw_error = result["stderr"] or result["stdout"]
+            error_context = ""
+            if suggestion:
+                error_context += f"Evaluator diagnosis: {suggestion}\n\n"
+            error_context += f"Error output (last 2000 chars):\n{raw_error[-2000:]}"
             try:
-                session.code = await fix_code(session.code, error_text, plan, language, lessons=lessons)
+                session.code = await fix_code(session.code, error_context, plan, language, lessons=lessons)
                 yield session.add_message("assistant", session.code, msg_type="code", data={"language": language})
             except Exception as e:
                 session.state = SessionState.FAILED

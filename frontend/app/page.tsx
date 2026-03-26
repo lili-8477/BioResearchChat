@@ -11,7 +11,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:800
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
-  type: "text" | "plan" | "code" | "output" | "result" | "error" | "system";
+  type: "text" | "plan" | "code" | "output" | "result" | "error" | "system" | "checklist";
   data?: Record<string, any>;
   state?: string;
 }
@@ -131,9 +131,8 @@ export default function Home() {
   const sendMessage = (content: string) => {
     if (!wsRef.current || !content.trim()) return;
 
-    const userMsg: Message = { role: "user", content, type: "text" };
-    setMessages((prev) => [...prev, userMsg]);
-
+    // Don't add user message locally — the server echoes it back via WebSocket
+    // so there's a single source of truth (prevents duplicates).
     wsRef.current.send(
       JSON.stringify({
         content,
@@ -174,17 +173,34 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-3">
           <span
-            className={`text-xs px-2 py-1 rounded ${
+            className={`text-xs px-2 py-1 rounded flex items-center gap-1.5 ${
               agentState === "idle" || agentState === "completed"
                 ? "bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
                 : agentState === "failed"
                 ? "bg-red-900/30 text-red-400"
-                : agentState === "awaiting_approval"
+                : agentState === "awaiting_approval" || agentState === "ready"
                 ? "bg-yellow-900/30 text-yellow-400"
                 : "bg-indigo-900/30 text-indigo-400"
             }`}
           >
-            {agentState.replace("_", " ")}
+            {/* Spinning indicator for active states */}
+            {["parsing", "planning", "resolving_env", "writing_code", "executing", "evaluating", "conversing"].includes(agentState) && (
+              <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+            )}
+            {({
+              idle: "Ready",
+              conversing: "Guiding...",
+              ready: "Waiting for details",
+              parsing: "Parsing URL...",
+              planning: "Planning...",
+              awaiting_approval: "Review plan",
+              resolving_env: "Setting up env...",
+              writing_code: "Writing code...",
+              executing: "Executing...",
+              evaluating: "Evaluating...",
+              completed: "Done",
+              failed: "Failed",
+            } as Record<string, string>)[agentState] || agentState}
           </span>
           <div
             className={`w-2 h-2 rounded-full ${
@@ -196,7 +212,7 @@ export default function Home() {
       </header>
 
       {/* Chat area */}
-      <ChatWindow messages={messages} sessionId={sessionId} backendUrl={BACKEND_URL} />
+      <ChatWindow messages={messages} sessionId={sessionId} backendUrl={BACKEND_URL} onSendMessage={sendMessage} />
 
       {/* Input area */}
       <div className="border-t border-[var(--border)] px-6 py-4">

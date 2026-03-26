@@ -35,6 +35,15 @@ IMPORT_TO_PACKAGE = {
     "macs2": "macs2",
 }
 
+# Packages that must be installed with --no-deps to avoid pulling broken transitive
+# dependencies (e.g., tiledb-vector-search fails to build from source in slim images).
+NO_DEPS_PACKAGES = {"scimilarity"}
+
+# Packages that should never be pip-installed at runtime because they're either
+# pre-installed in base images or require special build tooling that isn't available.
+# If missing, the user should switch to the correct base image instead.
+SKIP_PACKAGES = {"tiledb-vector-search"}
+
 # Packages that come with the Python stdlib — never try to pip install these
 STDLIB_MODULES = {
     "os", "sys", "re", "json", "csv", "math", "random", "datetime", "time",
@@ -128,18 +137,34 @@ def build_setup_script(code: str, language: str, extra_requirements: list[str] |
         pip_packages = imports_to_pip_packages(imports)
         # Also parse # REQUIREMENTS: comment from the code
         declared_requirements = extract_requirements_comment(code)
-        # Merge all sources
-        all_packages = sorted(set(pip_packages + extra_requirements + declared_requirements))
+        # Merge all sources, remove packages that should be skipped
+        all_packages = sorted(
+            set(pip_packages + extra_requirements + declared_requirements) - SKIP_PACKAGES
+        )
 
         if not all_packages:
             return "python /workspace/analysis.py"
 
-        pkg_str = " ".join(all_packages)
+        # Split into normal vs --no-deps packages
+        normal_pkgs = [p for p in all_packages if p not in NO_DEPS_PACKAGES]
+        no_deps_pkgs = [p for p in all_packages if p in NO_DEPS_PACKAGES]
+
+        install_lines = []
+        if normal_pkgs:
+            install_lines.append(
+                f"pip install --no-cache-dir --quiet {' '.join(normal_pkgs)} 2>&1 | tail -5 || true"
+            )
+        if no_deps_pkgs:
+            install_lines.append(
+                f"pip install --no-cache-dir --no-deps --quiet {' '.join(no_deps_pkgs)} 2>&1 | tail -5 || true"
+            )
+        install_cmd = "\n".join(install_lines)
+
         return f"""#!/bin/sh
 set -e
 
 echo "=== Installing dependencies ==="
-pip install --no-cache-dir --quiet {pkg_str} 2>&1 | tail -5 || true
+{install_cmd}
 
 echo "=== Running analysis ==="
 python /workspace/analysis.py
@@ -343,6 +368,8 @@ class DockerExecutor:
             if not missing or missing in STDLIB_MODULES:
                 return None
             pkg = IMPORT_TO_PACKAGE.get(missing, missing)
+            if pkg in SKIP_PACKAGES:
+                return None
             extra = [pkg]
         else:
             missing = parse_missing_r_package(stderr)

@@ -14,11 +14,17 @@ BASE_IMAGES = {
 
 
 def _make_tag(base_name: str, extra_packages: list[str]) -> str:
-    """Build a cache tag like research-agent/python-spatial:base+scvi+cellpose."""
+    """Build a cache tag like research-agent/python-spatial:base_scvi_cellpose.
+
+    Docker tags only allow [a-zA-Z0-9_.-], so we use '_' as separator
+    and sanitize package names.
+    """
     if not extra_packages:
         return BASE_IMAGES[base_name]
-    suffix = "+".join(sorted(extra_packages))
-    return f"{settings.IMAGE_PREFIX}/{base_name}:base+{suffix}"
+    import re
+    sanitized = sorted(re.sub(r'[^a-zA-Z0-9_.-]', '_', p) for p in extra_packages)
+    suffix = "_".join(sanitized)
+    return f"{settings.IMAGE_PREFIX}/{base_name}:base_{suffix}"
 
 
 def _image_exists(client: docker.DockerClient, tag: str) -> bool:

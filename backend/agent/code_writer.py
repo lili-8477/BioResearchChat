@@ -5,6 +5,7 @@ import json
 import anthropic
 
 from config import settings
+from agent.api_retry import api_call_with_retry
 
 CODE_SYSTEM = """You are a bioinformatics code generator. Given an analysis plan, write a complete, executable script that performs the analysis.
 
@@ -32,6 +33,18 @@ This requirements line is critical — it's parsed by the executor to install de
 
 If you are given reference code templates (skills), use them as a starting point and adapt to the specific plan.
 If you are given lessons from previous analyses, follow them to avoid known pitfalls.
+
+DEFENSIVE CODING — follow these to avoid common runtime errors:
+- Matrix sparsity: always use `scipy.sparse.issparse(X)` before calling `.nnz`, `.toarray()`, or sparse-specific methods. Example:
+    if scipy.sparse.issparse(adata.X):
+        sparsity = 1 - adata.X.nnz / np.prod(adata.X.shape)
+    else:
+        sparsity = 1 - np.count_nonzero(adata.X) / np.prod(adata.X.shape)
+- File paths: always check files exist before reading. Print what files are found in the data directory at the start.
+- Column names: print `df.columns.tolist()` or `adata.obs.columns.tolist()` before filtering on column values.
+- Wrap each major analysis step in try/except so one failure doesn't kill the whole script. Print the error and continue.
+- Use `os.makedirs('/workspace/output', exist_ok=True)` at the start.
+- Avoid hardcoding sample/column names — discover them from the data.
 
 Return ONLY the code, no markdown fencing, no explanation. Just the raw script content."""
 
@@ -82,7 +95,8 @@ async def generate_code(
     prompt_parts.append("\nWrite the complete analysis script. Output ONLY the code.")
     prompt = "\n".join(prompt_parts)
 
-    response = await client.messages.create(
+    response = await api_call_with_retry(
+        client,
         model=settings.CLAUDE_MODEL,
         max_tokens=8192,
         system=CODE_SYSTEM,
@@ -119,7 +133,8 @@ async def fix_code(
     prompt_parts.append("\nFix the script. Return ONLY the corrected code, no explanation.")
     prompt = "\n".join(prompt_parts)
 
-    response = await client.messages.create(
+    response = await api_call_with_retry(
+        client,
         model=settings.CLAUDE_MODEL,
         max_tokens=8192,
         system=CODE_SYSTEM,

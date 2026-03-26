@@ -4,15 +4,17 @@ import { useEffect, useRef } from "react";
 import type { Message } from "../page";
 import PlanReview from "./PlanReview";
 import ResultsView from "./ResultsView";
+import ChecklistGuide from "./ChecklistGuide";
 import ReactMarkdown from "react-markdown";
 
 interface ChatWindowProps {
   messages: Message[];
   sessionId: string | null;
   backendUrl: string;
+  onSendMessage?: (content: string) => void;
 }
 
-export default function ChatWindow({ messages, sessionId, backendUrl }: ChatWindowProps) {
+export default function ChatWindow({ messages, sessionId, backendUrl, onSendMessage }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,6 +58,8 @@ export default function ChatWindow({ messages, sessionId, backendUrl }: ChatWind
           message={msg}
           sessionId={sessionId}
           backendUrl={backendUrl}
+          onSendMessage={onSendMessage}
+          isLastChecklist={msg.type === "checklist" && !messages.slice(i + 1).some(m => m.type === "checklist")}
         />
       ))}
       <div ref={bottomRef} />
@@ -67,10 +71,14 @@ function MessageBubble({
   message,
   sessionId,
   backendUrl,
+  onSendMessage,
+  isLastChecklist,
 }: {
   message: Message;
   sessionId: string | null;
   backendUrl: string;
+  onSendMessage?: (content: string) => void;
+  isLastChecklist?: boolean;
 }) {
   const { role, content, type, data } = message;
 
@@ -102,6 +110,17 @@ function MessageBubble({
       <div className="max-w-[85%]">
         <PlanReview content={content} data={data || {}} />
       </div>
+    );
+  }
+
+  // Checklist guide
+  if (type === "checklist" && data) {
+    return (
+      <ChecklistGuide
+        data={data as any}
+        onSubmit={(response) => onSendMessage?.(response)}
+        disabled={!isLastChecklist}
+      />
     );
   }
 
