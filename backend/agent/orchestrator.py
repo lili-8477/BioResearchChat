@@ -1,6 +1,7 @@
 """Main agent orchestrator — coordinates the full analysis loop."""
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -630,6 +631,10 @@ class Orchestrator:
         # Step 6-8: Execute and evaluate loop
         total_attempts = session.max_retries + 1
         self._update_session(session, retry_count=0)
+
+        # Loop detection: track error signatures to break repeated failures
+        _error_hashes: list[str] = []
+
         while session.retry_count <= session.max_retries:
             self._update_session(session, state=SessionState.EXECUTING)
             attempt = session.retry_count + 1
@@ -821,12 +826,49 @@ class Orchestrator:
 
             # Failed — try to fix
             self._update_session(session, retry_count=session.retry_count + 1)
+
+            # Loop detection: hash the error signature to detect repeated failures.
+            # If the same error appears twice, the fix isn't working — bail early.
+            suggestion = evaluation.get("suggestion", "")
+            raw_error = result["stderr"] or result["stdout"]
+            error_sig = self._error_signature(raw_error, suggestion)
+            if error_sig in _error_hashes:
+                self._update_session(session, state=SessionState.FAILED)
+                yield session.add_message(
+                    "assistant",
+                    f"Detected repeated error — the same failure occurred twice, "
+                    f"stopping to avoid wasting retries.\n\n"
+                    f"Error: {suggestion or raw_error[-500:]}\n\n"
+                    "Try modifying the plan or providing more details.",
+                    msg_type="error",
+                    data={"evaluation": evaluation, "loop_detected": True},
+                )
+                # Write failure log
+                try:
+                    question = session.messages[0].content if session.messages else ""
+                    write_analysis_log(
+                        session_id=session.id,
+                        question=question,
+                        paper_info=session.paper_info,
+                        plan=plan,
+                        code=session.code,
+                        language=language,
+                        result=result,
+                        evaluation=evaluation,
+                        skills_used=skills_used,
+                        retries=session.retry_count,
+                    )
+                except Exception:
+                    pass
+                return
+            _error_hashes.append(error_sig)
+
             if session.retry_count > session.max_retries:
                 self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message(
                     "assistant",
                     f"Analysis failed after {session.max_retries + 1} attempts.\n\n"
-                    f"Last error: {evaluation.get('suggestion', 'Unknown error')}\n\n"
+                    f"Last error: {suggestion or 'Unknown error'}\n\n"
                     "You can try modifying the plan or asking a different question.",
                     msg_type="error",
                     data={"evaluation": evaluation},
@@ -853,18 +895,24 @@ class Orchestrator:
                 return
 
             # Fix code (with lessons context to avoid repeating mistakes)
-            suggestion = evaluation.get("suggestion", "")
             yield session.add_message(
                 "assistant",
                 f"Fixing code (attempt {attempt}/{total_attempts}): {suggestion}",
                 msg_type="system",
             )
             # Build focused error context: evaluator suggestion + last 2000 chars of stderr
-            raw_error = result["stderr"] or result["stdout"]
             error_context = ""
             if suggestion:
                 error_context += f"Evaluator diagnosis: {suggestion}\n\n"
             error_context += f"Error output (last 2000 chars):\n{raw_error[-2000:]}"
+
+            # Include previous error signatures so the LLM avoids the same fix
+            if len(_error_hashes) > 1:
+                error_context += (
+                    f"\n\nWARNING: Previous fix attempts failed with similar errors. "
+                    f"Try a fundamentally different approach."
+                )
+
             try:
                 self._update_session(
                     session,
@@ -875,6 +923,38 @@ class Orchestrator:
                 self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message("assistant", f"Code fix failed: {e}", msg_type="error")
                 return
+
+    @staticmethod
+    def _error_signature(stderr: str, suggestion: str) -> str:
+        """Hash the core error pattern to detect repeated failures.
+
+        Normalizes the error by extracting the exception type and key message,
+        stripping variable parts like line numbers, timestamps, and paths.
+        """
+        # Extract the core error line (last Traceback exception, or R error)
+        core = suggestion or ""
+        for pattern in [
+            # Python: "ModuleNotFoundError: No module named 'foo'"
+            r'(\w+Error): (.+)',
+            # Python: "TypeError: ..."
+            r'(\w+Exception): (.+)',
+            # R: "Error in foo(...) : something"
+            r'(Error in .+?) :',
+            # Generic fatal
+            r'(fatal|FATAL|Killed|OOM)',
+        ]:
+            m = re.search(pattern, stderr[-2000:])
+            if m:
+                core = m.group(0)
+                break
+
+        # Strip variable parts: line numbers, hex addresses, timestamps, paths
+        normalized = re.sub(r'line \d+', 'line N', core)
+        normalized = re.sub(r'0x[0-9a-fA-F]+', '0xADDR', normalized)
+        normalized = re.sub(r'/[\w/.\-]+', '/PATH', normalized)
+        normalized = re.sub(r'\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}', 'TIMESTAMP', normalized)
+
+        return hashlib.md5(normalized.encode()).hexdigest()
 
     def _format_plan(self, plan: dict) -> str:
         """Format a plan dict as readable markdown."""
