@@ -37,7 +37,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_BACKEND_URL=/api
+        - NEXT_PUBLIC_BACKEND_URL=
         - NEXT_PUBLIC_BASE_PATH=
         - NEXT_PUBLIC_CONTROL_API_TOKEN=${CONTROL_API_TOKEN}
     expose:
