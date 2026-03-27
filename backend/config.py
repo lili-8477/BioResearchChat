@@ -49,6 +49,11 @@ class Settings:
     CONTROL_COOKIE_SECURE: bool = _parse_bool(os.getenv("CONTROL_COOKIE_SECURE"), default=False)
     ENABLE_DEV_ENDPOINTS: bool = _parse_bool(os.getenv("ENABLE_DEV_ENDPOINTS"), default=False)
 
+    # Auth
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://biochat:biochat_dev@localhost:5432/biochat")
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "change-me-in-production")
+    JWT_EXPIRY_HOURS: int = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
+
     # Self-hosted data mirror (S3, GCS, HTTP, NFS)
     # Set to your mirror URL to avoid downloading from Zenodo/UCSC directly
     # Example: "https://your-bucket.s3.amazonaws.com/biochat-data"

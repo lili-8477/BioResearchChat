@@ -1,24 +1,38 @@
 "use client";
 
-const STATIC_CONTROL_TOKEN = process.env.NEXT_PUBLIC_CONTROL_API_TOKEN || "";
+export function getAuthToken(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem("biochat_token") || "";
+}
 
-export function getControlToken(): string {
-  if (STATIC_CONTROL_TOKEN) {
-    return STATIC_CONTROL_TOKEN;
+export function getUser(): { id: number; username: string; display_name: string } | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem("biochat_user");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
-  if (typeof window === "undefined") {
-    return "";
-  }
-  return window.localStorage.getItem("bioChat_controlToken") || "";
+}
+
+export function isLoggedIn(): boolean {
+  return !!getAuthToken();
+}
+
+export function logout() {
+  localStorage.removeItem("biochat_token");
+  localStorage.removeItem("biochat_user");
+  localStorage.removeItem("bioChat_sessionId");
+  window.location.href = "/login";
 }
 
 export function withControlHeaders(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers || {});
-  const token = getControlToken();
+  const token = getAuthToken();
   if (token) {
-    headers.set("x-control-token", token);
+    headers.set("Authorization", `Bearer ${token}`);
   }
-
   return {
     ...init,
     headers,
@@ -26,17 +40,18 @@ export function withControlHeaders(init: RequestInit = {}): RequestInit {
   };
 }
 
-export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  return fetch(input, withControlHeaders(init));
+export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(input, withControlHeaders(init));
+  if (res.status === 401) {
+    logout();
+  }
+  return res;
 }
 
-export function withControlWebSocket(url: string): string {
-  const token = getControlToken();
-  if (!token) {
-    return url;
-  }
-
-  const nextUrl = new URL(url);
-  nextUrl.searchParams.set("control_token", token);
-  return nextUrl.toString();
+export function wsUrl(baseUrl: string): string {
+  const token = getAuthToken();
+  if (!token) return baseUrl;
+  const url = new URL(baseUrl);
+  url.searchParams.set("token", token);
+  return url.toString();
 }

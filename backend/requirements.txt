@@ -11,3 +11,6 @@ pydantic==2.10.4
 pyyaml==6.0.2
 crawl4ai==0.8.6
 PyGithub==2.9.0
+asyncpg==0.30.0
+bcrypt==4.3.0
+PyJWT==2.10.1

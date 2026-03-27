@@ -5,7 +5,7 @@ import ChatWindow from "./components/ChatWindow";
 import PaperUpload from "./components/PaperUpload";
 import DataUpload from "./components/DataUpload";
 import Nav from "./components/Nav";
-import { apiFetch, withControlWebSocket } from "./lib/api";
+import { apiFetch, wsUrl, isLoggedIn, getUser, logout } from "./lib/api";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -25,8 +25,14 @@ export default function Home() {
   const [agentState, setAgentState] = useState("idle");
   const [paperUrl, setPaperUrl] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  // Track how many messages the server has sent — used to detect reconnect catch-up
   const serverMsgCount = useRef(0);
+
+  // Auth guard — redirect to login if not authenticated
+  useEffect(() => {
+    if (!isLoggedIn()) {
+      window.location.href = "/login";
+    }
+  }, []);
 
   // Persist session ID in sessionStorage so navigating between tabs keeps the session
   useEffect(() => {
@@ -49,7 +55,7 @@ export default function Home() {
 
     function connectWs(sid: string) {
       if (disposed) return;
-      const ws = new WebSocket(withControlWebSocket(`${getWsBase()}/ws/${sid}`));
+      const ws = new WebSocket(wsUrl(`${getWsBase()}/ws/${sid}`));
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -170,6 +176,19 @@ export default function Home() {
             title="Start a new session"
           >
             New Session
+          </button>
+        </div>
+        <div className="flex items-center gap-3">
+          {getUser() && (
+            <span className="text-xs text-[var(--text-secondary)]">
+              {getUser()?.display_name || getUser()?.username}
+            </span>
+          )}
+          <button
+            onClick={logout}
+            className="text-xs px-2 py-1 rounded border border-[var(--border)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+          >
+            Logout
           </button>
         </div>
         <div className="flex items-center gap-3">

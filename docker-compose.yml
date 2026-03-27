@@ -1,4 +1,17 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: biochat
+      POSTGRES_USER: biochat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-biochat_dev}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    expose:
+      - "5432"
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -13,6 +26,10 @@ services:
       - workspaces:/workspaces
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://biochat:${POSTGRES_PASSWORD:-biochat_dev}@postgres:5432/biochat
+    depends_on:
+      - postgres
     restart: unless-stopped
 
   frontend:
@@ -43,3 +60,4 @@ services:
 volumes:
   data_cache:
   workspaces:
+  pgdata:

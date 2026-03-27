@@ -6,11 +6,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from agent.orchestrator import Orchestrator, SessionState
+from auth import (
+    authenticate_user, create_token, get_db_pool, close_db_pool,
+    require_auth, ws_get_user,
+)
 from config import settings
 from container_runtime.image_cache import ImageCache
 from security import (
@@ -32,7 +37,14 @@ CONTAINER_MAX_AGE = 3600  # 1 hour
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown lifecycle — runs container cleanup in background."""
+    """Startup/shutdown lifecycle — DB pool + container cleanup."""
+    # Init DB pool
+    try:
+        await get_db_pool()
+        logger.info("Database pool initialized")
+    except Exception as e:
+        logger.warning(f"Database not available (auth disabled): {e}")
+
     cleanup_task = asyncio.create_task(_container_cleanup_loop())
     yield
     cleanup_task.cancel()
@@ -40,6 +52,7 @@ async def lifespan(app: FastAPI):
         await cleanup_task
     except asyncio.CancelledError:
         pass
+    await close_db_pool()
 
 
 async def _container_cleanup_loop():
@@ -72,7 +85,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.middleware("http")(control_token_http_middleware)
+# control_token_http_middleware disabled — replaced by JWT auth via Depends(require_auth)
+# app.middleware("http")(control_token_http_middleware)
 
 orchestrator = Orchestrator()
 image_cache = ImageCache()
@@ -87,9 +101,57 @@ async def health():
     return {"status": "ok"}
 
 
+# --- Auth Endpoints ---
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginRequest):
+    """Authenticate with username/password. Returns a JWT token."""
+    user = await authenticate_user(body.username, body.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = create_token(user["id"], user["username"])
+    response = JSONResponse({
+        "token": token,
+        "user": {"id": user["id"], "username": user["username"], "display_name": user["display_name"]},
+    })
+    response.set_cookie(
+        key="biochat_token",
+        value=token,
+        httponly=True,
+        secure=settings.CONTROL_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+        max_age=settings.JWT_EXPIRY_HOURS * 3600,
+    )
+    return response
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(require_auth)):
+    """Get the current authenticated user."""
+    return {"id": user["sub"], "username": user["username"]}
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    """Clear the auth cookie."""
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("biochat_token", path="/")
+    return response
+
+
+# --- Session Endpoints ---
+
+
 @app.post("/api/sessions")
-async def create_session():
-    """Create a new analysis session."""
+async def create_session(user: dict = Depends(require_auth)):
+    """Create a new analysis session (requires auth)."""
     session = orchestrator.create_session()
     return {"session_id": session.id}
 
@@ -491,10 +553,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     streams them to the client. Reconnecting clients catch up on missed messages.
     """
     await websocket.accept()
-    if not websocket_authenticated(websocket):
+    # Auth: check JWT token
+    ws_user = ws_get_user(websocket)
+    if not ws_user:
         await websocket.send_text(json.dumps({
             "role": "assistant",
-            "content": "Control token required",
+            "content": "Authentication required. Please log in.",
             "type": "error",
             "data": {},
             "state": "failed",
