@@ -1,6 +1,9 @@
 """FastAPI backend — REST + WebSocket endpoints for the research agent."""
 
+import asyncio
 import json
+import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, UploadFile, File
@@ -20,7 +23,46 @@ from skills.models import SkillCreate
 from memory.manager import MemoryManager
 from memory.models import LessonCreate
 
-app = FastAPI(title="Research Agent", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+# Container cleanup interval (seconds)
+CLEANUP_INTERVAL = 300  # 5 minutes
+CONTAINER_MAX_AGE = 3600  # 1 hour
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle — runs container cleanup in background."""
+    cleanup_task = asyncio.create_task(_container_cleanup_loop())
+    yield
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _container_cleanup_loop():
+    """Periodically clean up stopped and orphaned containers."""
+    # Wait a bit before first cleanup to let the app start
+    await asyncio.sleep(30)
+    while True:
+        try:
+            removed = await orchestrator.executor.cleanup_containers(
+                max_age_seconds=CONTAINER_MAX_AGE,
+            )
+            killed = await orchestrator.executor.kill_orphaned_containers()
+            if removed or killed:
+                logger.info(
+                    f"Container cleanup: removed {len(removed)} stopped, "
+                    f"killed {len(killed)} orphaned"
+                )
+        except Exception as e:
+            logger.warning(f"Container cleanup error: {e}")
+        await asyncio.sleep(CLEANUP_INTERVAL)
+
+
+app = FastAPI(title="Research Agent", version="0.1.0", lifespan=lifespan)
 
 # CORS for frontend dev
 app.add_middleware(
@@ -311,6 +353,15 @@ async def clear_url_cache():
     return {"cleared": count}
 
 
+@app.post("/api/dev/cleanup-containers")
+async def cleanup_containers():
+    """Dev only: manually trigger container cleanup."""
+    require_dev_endpoints_enabled()
+    removed = await orchestrator.executor.cleanup_containers(max_age_seconds=0)
+    killed = await orchestrator.executor.kill_orphaned_containers()
+    return {"removed": len(removed), "killed": len(killed)}
+
+
 # --- Skills Endpoints ---
 
 
@@ -407,7 +458,6 @@ async def delete_lesson(lesson_id: str):
 
 # Background task management: execution runs independently of WebSocket connection.
 # Messages are buffered so reconnecting clients catch up.
-import asyncio
 
 # {session_id: asyncio.Task} — tracks running agent tasks
 _running_tasks: dict[str, asyncio.Task] = {}

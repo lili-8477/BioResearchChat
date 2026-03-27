@@ -1,14 +1,23 @@
 """Docker execution layer — run scripts in containers with automatic dependency installation."""
 
 import asyncio
+import logging
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 
 import docker
 
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+# Label applied to all containers we create, used for cleanup
+CONTAINER_LABEL = "managed-by=research-agent"
+CONTAINER_LABEL_KEY = "managed-by"
+CONTAINER_LABEL_VALUE = "research-agent"
 
 # Python import name → pip package name (common mismatches in bioinformatics)
 IMPORT_TO_PACKAGE = {
@@ -289,7 +298,7 @@ class DockerExecutor:
         # Run the setup script which installs deps then runs analysis
         cmd = "sh /workspace/setup.sh"
 
-        # Run container
+        # Run container with label for cleanup tracking
         container = await asyncio.to_thread(
             self.client.containers.run,
             image,
@@ -300,23 +309,36 @@ class DockerExecutor:
             nano_cpus=settings.CONTAINER_CPU_LIMIT * 1_000_000_000,
             detach=True,
             remove=False,
+            labels={CONTAINER_LABEL_KEY: CONTAINER_LABEL_VALUE},
         )
 
-        # Stream output
+        # Stream stdout and stderr separately using demux=True
         stdout_parts = []
         stderr_parts = []
         loop = asyncio.get_running_loop()
-        stream_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        # Queue items: (stream_type, text) or None for end-of-stream
+        stream_queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue()
         wait_task = None
         stream_done = False
 
         try:
             def _stream_logs():
                 try:
-                    for chunk in container.logs(stream=True, follow=True, timestamps=False):
-                        line = chunk.decode("utf-8", errors="replace")
-                        stdout_parts.append(line)
-                        loop.call_soon_threadsafe(stream_queue.put_nowait, line)
+                    for stdout_chunk, stderr_chunk in container.logs(
+                        stream=True, follow=True, timestamps=False, demux=True,
+                    ):
+                        if stdout_chunk:
+                            text = stdout_chunk.decode("utf-8", errors="replace")
+                            stdout_parts.append(text)
+                            loop.call_soon_threadsafe(
+                                stream_queue.put_nowait, ("stdout", text)
+                            )
+                        if stderr_chunk:
+                            text = stderr_chunk.decode("utf-8", errors="replace")
+                            stderr_parts.append(text)
+                            loop.call_soon_threadsafe(
+                                stream_queue.put_nowait, ("stderr", text)
+                            )
                 except Exception as exc:
                     stderr_parts.append(str(exc))
                 finally:
@@ -331,23 +353,18 @@ class DockerExecutor:
                 if wait_task.done() and stream_done and stream_queue.empty():
                     break
                 try:
-                    line = await asyncio.wait_for(stream_queue.get(), timeout=0.5)
+                    item = await asyncio.wait_for(stream_queue.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     continue
-                if line is None:
+                if item is None:
                     stream_done = True
                     continue
+                stream_type, text = item
                 if on_output:
-                    await on_output(line)
+                    await on_output(text)
 
             result = await wait_task
             exit_code = result["StatusCode"]
-
-            stderr_log = await asyncio.to_thread(
-                lambda: container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-            )
-            if stderr_log:
-                stderr_parts.append(stderr_log)
 
         except Exception as e:
             exit_code = 1
@@ -427,3 +444,84 @@ class DockerExecutor:
         workspace = settings.WORKSPACE_DIR / session_id
         if workspace.exists():
             shutil.rmtree(workspace)
+
+    async def cleanup_containers(self, max_age_seconds: int = 3600) -> list[str]:
+        """Remove stopped containers created by this agent that are older than max_age.
+
+        Returns list of removed container IDs.
+        """
+        removed = []
+        try:
+            containers = await asyncio.to_thread(
+                self.client.containers.list,
+                all=True,  # include stopped
+                filters={"label": CONTAINER_LABEL, "status": ["exited", "dead", "created"]},
+            )
+            now = time.time()
+            for c in containers:
+                try:
+                    # Parse container finish time
+                    finished_at = c.attrs.get("State", {}).get("FinishedAt", "")
+                    if finished_at and finished_at != "0001-01-01T00:00:00Z":
+                        from datetime import datetime, timezone
+                        # Docker timestamps: "2024-01-01T00:00:00.000000000Z"
+                        ts = finished_at.split(".")[0].rstrip("Z")
+                        finish_time = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S").replace(
+                            tzinfo=timezone.utc
+                        ).timestamp()
+                        age = now - finish_time
+                    else:
+                        # Container never ran or just created — use a large age
+                        age = max_age_seconds + 1
+
+                    if age > max_age_seconds:
+                        short_id = c.short_id
+                        await asyncio.to_thread(c.remove, force=True)
+                        removed.append(short_id)
+                        logger.info(f"Cleaned up container {short_id} (age: {int(age)}s)")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up container {c.short_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Container cleanup failed: {e}")
+        return removed
+
+    async def kill_orphaned_containers(self, timeout_seconds: int | None = None) -> list[str]:
+        """Kill running containers that have exceeded the execution timeout.
+
+        Returns list of killed container IDs.
+        """
+        timeout = timeout_seconds or settings.EXECUTION_TIMEOUT_SECONDS
+        killed = []
+        try:
+            containers = await asyncio.to_thread(
+                self.client.containers.list,
+                filters={"label": CONTAINER_LABEL, "status": ["running"]},
+            )
+            now = time.time()
+            for c in containers:
+                try:
+                    started_at = c.attrs.get("State", {}).get("StartedAt", "")
+                    if started_at and started_at != "0001-01-01T00:00:00Z":
+                        from datetime import datetime, timezone
+                        ts = started_at.split(".")[0].rstrip("Z")
+                        start_time = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S").replace(
+                            tzinfo=timezone.utc
+                        ).timestamp()
+                        running_for = now - start_time
+                    else:
+                        continue
+
+                    if running_for > timeout:
+                        short_id = c.short_id
+                        await asyncio.to_thread(c.kill)
+                        await asyncio.to_thread(c.remove, force=True)
+                        killed.append(short_id)
+                        logger.warning(
+                            f"Killed orphaned container {short_id} "
+                            f"(running for {int(running_for)}s, timeout: {timeout}s)"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to kill orphaned container {c.short_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Orphan cleanup failed: {e}")
+        return killed
