@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Nav from "../components/Nav";
 import { apiFetch } from "../lib/api";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
 interface Lesson {
   id: string;

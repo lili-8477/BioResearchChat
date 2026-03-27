@@ -7,7 +7,7 @@ import DataUpload from "./components/DataUpload";
 import Nav from "./components/Nav";
 import { apiFetch, wsUrl, isLoggedIn, getUser, logout } from "./lib/api";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
 export interface Message {
   role: "user" | "assistant" | "system";
