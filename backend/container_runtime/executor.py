@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import threading
 import uuid
 from pathlib import Path
 
@@ -289,7 +290,8 @@ class DockerExecutor:
         cmd = "sh /workspace/setup.sh"
 
         # Run container
-        container = self.client.containers.run(
+        container = await asyncio.to_thread(
+            self.client.containers.run,
             image,
             command=cmd,
             volumes=volumes,
@@ -303,31 +305,62 @@ class DockerExecutor:
         # Stream output
         stdout_parts = []
         stderr_parts = []
+        loop = asyncio.get_running_loop()
+        stream_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        wait_task = None
+        stream_done = False
 
         try:
-            for chunk in container.logs(stream=True, follow=True, timestamps=False):
-                line = chunk.decode("utf-8", errors="replace")
-                stdout_parts.append(line)
+            def _stream_logs():
+                try:
+                    for chunk in container.logs(stream=True, follow=True, timestamps=False):
+                        line = chunk.decode("utf-8", errors="replace")
+                        stdout_parts.append(line)
+                        loop.call_soon_threadsafe(stream_queue.put_nowait, line)
+                except Exception as exc:
+                    stderr_parts.append(str(exc))
+                finally:
+                    loop.call_soon_threadsafe(stream_queue.put_nowait, None)
+
+            threading.Thread(target=_stream_logs, daemon=True).start()
+            wait_task = asyncio.create_task(
+                asyncio.to_thread(container.wait, timeout=settings.EXECUTION_TIMEOUT_SECONDS)
+            )
+
+            while True:
+                if wait_task.done() and stream_done and stream_queue.empty():
+                    break
+                try:
+                    line = await asyncio.wait_for(stream_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                if line is None:
+                    stream_done = True
+                    continue
                 if on_output:
                     await on_output(line)
 
-            result = container.wait(timeout=settings.EXECUTION_TIMEOUT_SECONDS)
+            result = await wait_task
             exit_code = result["StatusCode"]
 
-            stderr_log = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            stderr_log = await asyncio.to_thread(
+                lambda: container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            )
             if stderr_log:
                 stderr_parts.append(stderr_log)
 
         except Exception as e:
             exit_code = 1
             stderr_parts.append(str(e))
+            if wait_task:
+                wait_task.cancel()
             try:
-                container.kill()
+                await asyncio.to_thread(container.kill)
             except Exception:
                 pass
         finally:
             try:
-                container.remove()
+                await asyncio.to_thread(container.remove)
             except Exception:
                 pass
 

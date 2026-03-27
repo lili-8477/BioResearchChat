@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { apiFetch } from "../lib/api";
 
 interface ResultsViewProps {
   content: string;
@@ -31,7 +32,7 @@ export default function ResultsView({
   const saveLesson = async () => {
     if (!lessonText.trim()) return;
     try {
-      await fetch(`${backendUrl}/api/lessons`, {
+      await apiFetch(`${backendUrl}/api/lessons`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -6,7 +6,8 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import AsyncGenerator
+from pathlib import Path
+from typing import AsyncGenerator, Callable
 
 from agent.paper_parser import parse_url
 from agent.planner import generate_plan
@@ -15,6 +16,7 @@ from agent.evaluator import evaluate_output
 from agent.image_resolver import resolve_image
 from data.api import DataAPI
 from container_runtime.executor import DockerExecutor
+from config import settings
 from skills.manager import SkillManager
 from memory.manager import MemoryManager
 from agent.analysis_log import write_analysis_log
@@ -35,6 +37,16 @@ class SessionState(str, Enum):
     FAILED = "failed"
 
 
+RECOVERABLE_ACTIVE_STATES = {
+    SessionState.PARSING,
+    SessionState.PLANNING,
+    SessionState.RESOLVING_ENV,
+    SessionState.WRITING_CODE,
+    SessionState.EXECUTING,
+    SessionState.EVALUATING,
+}
+
+
 @dataclass
 class Message:
     role: str  # "user", "assistant", "system"
@@ -53,10 +65,13 @@ class Session:
     code: str = ""
     retry_count: int = 0
     max_retries: int = 3
+    persist_callback: Callable[["Session"], None] | None = field(default=None, repr=False, compare=False)
 
     def add_message(self, role: str, content: str, msg_type: str = "text", data: dict = None) -> Message:
         msg = Message(role=role, content=content, msg_type=msg_type, data=data or {})
         self.messages.append(msg)
+        if self.persist_callback:
+            self.persist_callback(self)
         return msg
 
 
@@ -67,16 +82,108 @@ class Orchestrator:
     """
 
     def __init__(self):
-        self.sessions: dict[str, Session] = {}
+        self.sessions_dir = settings.SESSION_STATE_DIR
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.executor = DockerExecutor()
         self.data_api = DataAPI()
         self.skill_manager = SkillManager()
         self.memory_manager = MemoryManager()
+        self.sessions = self._load_sessions()
 
-    def create_session(self) -> Session:
-        session_id = str(uuid.uuid4())
-        session = Session(id=session_id)
+    def _session_path(self, session_id: str) -> Path:
+        return self.sessions_dir / f"{session_id}.json"
+
+    def _bind_session(self, session: Session) -> Session:
+        session.persist_callback = self.persist_session
+        return session
+
+    def _serialize_session(self, session: Session) -> dict:
+        return {
+            "id": session.id,
+            "state": session.state.value,
+            "messages": [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "msg_type": msg.msg_type,
+                    "data": msg.data,
+                }
+                for msg in session.messages
+            ],
+            "paper_info": session.paper_info,
+            "plan": session.plan,
+            "code": session.code,
+            "retry_count": session.retry_count,
+            "max_retries": session.max_retries,
+        }
+
+    def _deserialize_session(self, data: dict) -> Session:
+        messages = [
+            Message(
+                role=msg.get("role", "assistant"),
+                content=msg.get("content", ""),
+                msg_type=msg.get("msg_type", "text"),
+                data=msg.get("data", {}) or {},
+            )
+            for msg in data.get("messages", [])
+        ]
+        state_value = data.get("state", SessionState.IDLE.value)
+        try:
+            state = SessionState(state_value)
+        except ValueError:
+            state = SessionState.IDLE
+
+        if state in RECOVERABLE_ACTIVE_STATES:
+            state = SessionState.FAILED
+            messages.append(
+                Message(
+                    role="assistant",
+                    content="The backend restarted while this run was active. Review the saved plan and replay it if needed.",
+                    msg_type="system",
+                    data={},
+                )
+            )
+
+        session = Session(
+            id=data["id"],
+            state=state,
+            messages=messages,
+            paper_info=data.get("paper_info", {}) or {},
+            plan=data.get("plan", {}) or {},
+            code=data.get("code", "") or "",
+            retry_count=int(data.get("retry_count", 0) or 0),
+            max_retries=int(data.get("max_retries", 3) or 3),
+        )
+        return self._bind_session(session)
+
+    def _load_sessions(self) -> dict[str, Session]:
+        sessions: dict[str, Session] = {}
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                session = self._deserialize_session(data)
+                sessions[session.id] = session
+            except Exception:
+                continue
+        return sessions
+
+    def persist_session(self, session: Session):
+        path = self._session_path(session.id)
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(self._serialize_session(session), indent=2))
+        tmp_path.replace(path)
+
+    def _update_session(self, session: Session, **updates) -> Session:
+        for key, value in updates.items():
+            setattr(session, key, value)
+        self.persist_session(session)
+        return session
+
+    def create_session(self, session_id: str | None = None) -> Session:
+        session_id = session_id or str(uuid.uuid4())
+        session = self._bind_session(Session(id=session_id))
         self.sessions[session_id] = session
+        self.persist_session(session)
         return session
 
     def get_session(self, session_id: str) -> Session | None:
@@ -116,8 +223,7 @@ class Orchestrator:
         """Handle a user message and yield response messages as they're generated."""
         session = self.get_session(session_id)
         if not session:
-            session = self.create_session()
-            session.id = session_id
+            session = self.create_session(session_id=session_id)
 
         session.add_message("user", content)
 
@@ -128,7 +234,7 @@ class Orchestrator:
                     yield msg
                 return
             elif content.lower() in ("reject", "no", "cancel"):
-                session.state = SessionState.IDLE
+                self._update_session(session, state=SessionState.IDLE)
                 yield session.add_message("assistant", "Plan rejected. Send a new question or paste a new URL.")
                 return
             else:
@@ -233,7 +339,7 @@ class Orchestrator:
         content: str,
     ) -> AsyncGenerator[Message, None]:
         """Guide the user through 3 checklists: data type, analysis method, expected output."""
-        session.state = SessionState.CONVERSING
+        self._update_session(session, state=SessionState.CONVERSING)
 
         step = self._checklist_step(session)
 
@@ -307,7 +413,7 @@ class Orchestrator:
             return
 
         # All 3 answered — show summary, ask user to add details or proceed
-        session.state = SessionState.READY
+        self._update_session(session, state=SessionState.READY)
 
         # Collect checklist answers
         answers = []
@@ -345,11 +451,11 @@ class Orchestrator:
 
         # Step 1: Parse paper from URL
         if paper_url:
-            session.state = SessionState.PARSING
+            self._update_session(session, state=SessionState.PARSING)
             yield session.add_message("assistant", f"Parsing paper from {paper_url}...", msg_type="system")
 
             try:
-                session.paper_info = await parse_url(paper_url)
+                self._update_session(session, paper_info=await parse_url(paper_url))
                 yield session.add_message(
                     "assistant",
                     f"Paper parsed: {session.paper_info.get('summary', 'Analysis extracted')}",
@@ -357,19 +463,22 @@ class Orchestrator:
                     data=session.paper_info,
                 )
             except Exception as e:
-                session.state = SessionState.FAILED
+                self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message("assistant", f"Failed to parse paper: {e}", msg_type="error")
                 return
         elif not session.paper_info:
-            session.paper_info = {
-                "analysis_type": "general",
-                "methods": [],
-                "packages": [],
-                "language": "python",
-                "datasets": [],
-                "key_parameters": {},
-                "summary": question,
-            }
+            self._update_session(
+                session,
+                paper_info={
+                    "analysis_type": "general",
+                    "methods": [],
+                    "packages": [],
+                    "language": "python",
+                    "datasets": [],
+                    "key_parameters": {},
+                    "summary": question,
+                },
+            )
 
         # Find relevant skills (registry metadata only — no code templates)
         skills = self._find_skill_registry(question, session.paper_info)
@@ -391,17 +500,20 @@ class Orchestrator:
             )
 
         # Step 2: Generate plan (with skills registry + lessons context)
-        session.state = SessionState.PLANNING
+        self._update_session(session, state=SessionState.PLANNING)
         yield session.add_message("assistant", "Generating analysis plan...", msg_type="system")
 
         try:
             # Pass lightweight skill registry (no code templates) to planner
-            session.plan = await generate_plan(
-                session.paper_info, question,
-                skills=skills,
-                lessons=lessons,
+            self._update_session(
+                session,
+                plan=await generate_plan(
+                    session.paper_info, question,
+                    skills=skills,
+                    lessons=lessons,
+                ),
             )
-            session.state = SessionState.AWAITING_APPROVAL
+            self._update_session(session, state=SessionState.AWAITING_APPROVAL)
 
             plan_text = self._format_plan(session.plan)
             yield session.add_message("assistant", plan_text, msg_type="plan", data=session.plan)
@@ -411,12 +523,12 @@ class Orchestrator:
                 msg_type="system",
             )
         except Exception as e:
-            session.state = SessionState.FAILED
+            self._update_session(session, state=SessionState.FAILED)
             yield session.add_message("assistant", f"Failed to generate plan: {e}", msg_type="error")
 
     async def _replan(self, session: Session, modifications: str) -> AsyncGenerator[Message, None]:
         """Regenerate plan with user modifications."""
-        session.state = SessionState.PLANNING
+        self._update_session(session, state=SessionState.PLANNING)
         yield session.add_message("assistant", "Updating plan with your feedback...", msg_type="system")
 
         modified_question = (
@@ -428,11 +540,14 @@ class Orchestrator:
         lessons = self._find_lessons(modified_question, session.paper_info)
 
         try:
-            session.plan = await generate_plan(
-                session.paper_info, modified_question,
-                skills=skills, lessons=lessons,
+            self._update_session(
+                session,
+                plan=await generate_plan(
+                    session.paper_info, modified_question,
+                    skills=skills, lessons=lessons,
+                ),
             )
-            session.state = SessionState.AWAITING_APPROVAL
+            self._update_session(session, state=SessionState.AWAITING_APPROVAL)
 
             plan_text = self._format_plan(session.plan)
             yield session.add_message("assistant", plan_text, msg_type="plan", data=session.plan)
@@ -442,7 +557,7 @@ class Orchestrator:
                 msg_type="system",
             )
         except Exception as e:
-            session.state = SessionState.FAILED
+            self._update_session(session, state=SessionState.FAILED)
             yield session.add_message("assistant", f"Failed to update plan: {e}", msg_type="error")
 
     async def _execute_plan(self, session: Session) -> AsyncGenerator[Message, None]:
@@ -463,7 +578,7 @@ class Orchestrator:
         skills_used = [skill_ref] if skill_ref else []
 
         # Step 3: Resolve environment
-        session.state = SessionState.RESOLVING_ENV
+        self._update_session(session, state=SessionState.RESOLVING_ENV)
         yield session.add_message("assistant", "Setting up execution environment...", msg_type="system")
 
         try:
@@ -472,7 +587,7 @@ class Orchestrator:
             image_tag = await resolve_image(base_image, extra_packages)
             yield session.add_message("assistant", f"Using image: `{image_tag}`", msg_type="system")
         except Exception as e:
-            session.state = SessionState.FAILED
+            self._update_session(session, state=SessionState.FAILED)
             yield session.add_message("assistant", f"Environment setup failed: {e}", msg_type="error")
             return
 
@@ -497,23 +612,26 @@ class Orchestrator:
                 yield session.add_message("assistant", f"Warning: Dataset mount failed: {e}", msg_type="error")
 
         # Step 5: Write code (with single skill content + lessons)
-        session.state = SessionState.WRITING_CODE
+        self._update_session(session, state=SessionState.WRITING_CODE)
         yield session.add_message("assistant", "Writing analysis code...", msg_type="system")
 
         language = plan.get("language", "python")
         try:
-            session.code = await generate_code(plan, language, skill_content=skill_content, lessons=lessons)
+            self._update_session(
+                session,
+                code=await generate_code(plan, language, skill_content=skill_content, lessons=lessons),
+            )
             yield session.add_message("assistant", session.code, msg_type="code", data={"language": language})
         except Exception as e:
-            session.state = SessionState.FAILED
+            self._update_session(session, state=SessionState.FAILED)
             yield session.add_message("assistant", f"Code generation failed: {e}", msg_type="error")
             return
 
         # Step 6-8: Execute and evaluate loop
         total_attempts = session.max_retries + 1
-        session.retry_count = 0
+        self._update_session(session, retry_count=0)
         while session.retry_count <= session.max_retries:
-            session.state = SessionState.EXECUTING
+            self._update_session(session, state=SessionState.EXECUTING)
             attempt = session.retry_count + 1
             yield session.add_message(
                 "assistant",
@@ -554,7 +672,7 @@ class Orchestrator:
                     session.add_message("assistant", "".join(_stream_buffer).rstrip(), msg_type="output")
                     _stream_buffer.clear()
             except Exception as e:
-                session.state = SessionState.FAILED
+                self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message("assistant", f"Execution error: {e}", msg_type="error")
                 return
 
@@ -610,7 +728,7 @@ class Orchestrator:
                         pass
 
             # Step 8: Evaluate
-            session.state = SessionState.EVALUATING
+            self._update_session(session, state=SessionState.EVALUATING)
             exit_status = "exit 0" if result["exit_code"] == 0 else f"exit {result['exit_code']}"
             n_files = len(result["output_files"])
             yield session.add_message(
@@ -641,7 +759,7 @@ class Orchestrator:
                 }
 
             if evaluation.get("success"):
-                session.state = SessionState.COMPLETED
+                self._update_session(session, state=SessionState.COMPLETED)
                 yield session.add_message(
                     "assistant",
                     evaluation.get("summary", "Analysis completed successfully."),
@@ -702,9 +820,9 @@ class Orchestrator:
                 return
 
             # Failed — try to fix
-            session.retry_count += 1
+            self._update_session(session, retry_count=session.retry_count + 1)
             if session.retry_count > session.max_retries:
-                session.state = SessionState.FAILED
+                self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message(
                     "assistant",
                     f"Analysis failed after {session.max_retries + 1} attempts.\n\n"
@@ -748,10 +866,13 @@ class Orchestrator:
                 error_context += f"Evaluator diagnosis: {suggestion}\n\n"
             error_context += f"Error output (last 2000 chars):\n{raw_error[-2000:]}"
             try:
-                session.code = await fix_code(session.code, error_context, plan, language, lessons=lessons)
+                self._update_session(
+                    session,
+                    code=await fix_code(session.code, error_context, plan, language, lessons=lessons),
+                )
                 yield session.add_message("assistant", session.code, msg_type="code", data={"language": language})
             except Exception as e:
-                session.state = SessionState.FAILED
+                self._update_session(session, state=SessionState.FAILED)
                 yield session.add_message("assistant", f"Code fix failed: {e}", msg_type="error")
                 return
 

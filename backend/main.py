@@ -10,6 +10,11 @@ from fastapi.responses import FileResponse
 from agent.orchestrator import Orchestrator, SessionState
 from config import settings
 from container_runtime.image_cache import ImageCache
+from security import (
+    control_token_http_middleware,
+    require_dev_endpoints_enabled,
+    websocket_authenticated,
+)
 from skills.manager import SkillManager
 from skills.models import SkillCreate
 from memory.manager import MemoryManager
@@ -20,11 +25,12 @@ app = FastAPI(title="Research Agent", version="0.1.0")
 # CORS for frontend dev
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(control_token_http_middleware)
 
 orchestrator = Orchestrator()
 image_cache = ImageCache()
@@ -256,6 +262,7 @@ async def replay_session(session_id: str):
     Loads the session's saved plan and jumps straight to execution.
     Useful when debugging execution failures without burning API tokens on parsing/planning.
     """
+    require_dev_endpoints_enabled()
     session = orchestrator.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -265,6 +272,7 @@ async def replay_session(session_id: str):
     # Reset state for re-execution
     session.state = SessionState.AWAITING_APPROVAL
     session.retry_count = 0
+    orchestrator.persist_session(session)
 
     return {
         "session_id": session.id,
@@ -277,6 +285,7 @@ async def replay_session(session_id: str):
 @app.get("/api/dev/sessions")
 async def list_sessions():
     """Dev only: list all active sessions with their state and plan."""
+    require_dev_endpoints_enabled()
     sessions = []
     for sid, s in orchestrator.sessions.items():
         sessions.append({
@@ -293,6 +302,7 @@ async def list_sessions():
 @app.delete("/api/dev/url-cache")
 async def clear_url_cache():
     """Dev only: clear the URL parse cache."""
+    require_dev_endpoints_enabled()
     from agent.paper_parser import _CACHE_DIR
     count = 0
     for f in _CACHE_DIR.glob("*.json"):
@@ -413,6 +423,8 @@ async def _run_agent_loop(session_id: str, content: str, paper_url: str | None):
             # Messages are already appended to session.messages by the orchestrator.
             # We just need to notify any connected WebSocket.
             pass
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         if session:
             session.add_message("assistant", f"Error: {e}", msg_type="error")
@@ -429,14 +441,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     streams them to the client. Reconnecting clients catch up on missed messages.
     """
     await websocket.accept()
+    if not websocket_authenticated(websocket):
+        await websocket.send_text(json.dumps({
+            "role": "assistant",
+            "content": "Control token required",
+            "type": "error",
+            "data": {},
+            "state": "failed",
+        }))
+        await websocket.close(code=1008)
+        return
 
     # Ensure session exists
     session = orchestrator.get_session(session_id)
     if not session:
-        session = orchestrator.create_session()
-        orchestrator.sessions.pop(session.id)
-        session.id = session_id
-        orchestrator.sessions[session_id] = session
+        session = orchestrator.create_session(session_id=session_id)
 
     # Track how many messages this client has already seen
     seen = 0
@@ -497,10 +516,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             # Note: handle_message also adds it, so we skip adding here
             # and let the orchestrator handle it.
 
-            # Cancel any existing task for this session
             existing = _running_tasks.get(session_id)
             if existing and not existing.done():
-                existing.cancel()
+                session.add_message(
+                    "assistant",
+                    "A run is already active for this session. Wait for it to finish or start a new session.",
+                    msg_type="system",
+                )
+                await flush_new_messages()
+                continue
 
             # Run agent loop as background task
             task = asyncio.create_task(_run_agent_loop(session_id, content, paper_url))

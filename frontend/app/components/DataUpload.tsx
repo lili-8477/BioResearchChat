@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { apiFetch, withControlHeaders } from "../lib/api";
 
 interface DataFile {
   filename: string;
@@ -21,7 +22,7 @@ export default function DataUpload({ backendUrl }: DataUploadProps) {
 
   const fetchFiles = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/data/files`);
+      const res = await apiFetch(`${backendUrl}/api/data/files`);
       const data = await res.json();
       setFiles(data.files || []);
     } catch {
@@ -47,10 +48,13 @@ export default function DataUpload({ backendUrl }: DataUploadProps) {
     formData.append("file", file);
 
     try {
-      const res = await fetch(`${backendUrl}/api/data/upload`, {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch(
+        `${backendUrl}/api/data/upload`,
+        withControlHeaders({
+          method: "POST",
+          body: formData,
+        })
+      );
 
       if (!res.ok) {
         const err = await res.json();
@@ -70,7 +74,7 @@ export default function DataUpload({ backendUrl }: DataUploadProps) {
 
   const handleDelete = async (filename: string) => {
     try {
-      const res = await fetch(`${backendUrl}/api/data/files/${filename}`, {
+      const res = await apiFetch(`${backendUrl}/api/data/files/${filename}`, {
         method: "DELETE",
       });
       if (res.ok) {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Nav from "../components/Nav";
+import { apiFetch } from "../lib/api";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -22,7 +23,7 @@ export default function SkillsPage() {
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
-    fetch(`${BACKEND_URL}/api/skills`)
+    apiFetch(`${BACKEND_URL}/api/skills`)
       .then((r) => r.json())
       .then((data) => setSkills(data.skills || []))
       .catch(() => {});

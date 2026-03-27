@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Nav from "../components/Nav";
+import { apiFetch } from "../lib/api";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -25,7 +26,7 @@ export default function LessonsPage() {
 
   const fetchLessons = () => {
     const params = filter !== "all" ? `?source=${filter}` : "";
-    fetch(`${BACKEND_URL}/api/lessons${params}`)
+    apiFetch(`${BACKEND_URL}/api/lessons${params}`)
       .then((r) => r.json())
       .then((data) => setLessons(data.lessons || []))
       .catch(() => {});
@@ -38,7 +39,7 @@ export default function LessonsPage() {
   const handleCreate = async () => {
     if (!formTitle.trim() || !formContent.trim()) return;
 
-    await fetch(`${BACKEND_URL}/api/lessons`, {
+    await apiFetch(`${BACKEND_URL}/api/lessons`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -57,7 +58,7 @@ export default function LessonsPage() {
   };
 
   const handleDelete = async (id: string) => {
-    await fetch(`${BACKEND_URL}/api/lessons/${id}`, { method: "DELETE" });
+    await apiFetch(`${BACKEND_URL}/api/lessons/${id}`, { method: "DELETE" });
     fetchLessons();
   };
 

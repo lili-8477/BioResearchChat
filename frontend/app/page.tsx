@@ -5,6 +5,7 @@ import ChatWindow from "./components/ChatWindow";
 import PaperUpload from "./components/PaperUpload";
 import DataUpload from "./components/DataUpload";
 import Nav from "./components/Nav";
+import { apiFetch, withControlWebSocket } from "./lib/api";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
@@ -48,7 +49,7 @@ export default function Home() {
 
     function connectWs(sid: string) {
       if (disposed) return;
-      const ws = new WebSocket(`${getWsBase()}/ws/${sid}`);
+      const ws = new WebSocket(withControlWebSocket(`${getWsBase()}/ws/${sid}`));
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -85,7 +86,7 @@ export default function Home() {
         // Try to restore existing session from the backend
         const stored = sessionStorage.getItem("bioChat_sessionId");
         if (stored) {
-          const checkRes = await fetch(`${BACKEND_URL}/api/sessions/${stored}`);
+          const checkRes = await apiFetch(`${BACKEND_URL}/api/sessions/${stored}`);
           if (checkRes.ok) {
             // Session still exists on the backend — reconnect
             setSessionId(stored);
@@ -95,7 +96,7 @@ export default function Home() {
         }
 
         // No valid session — create a new one
-        const res = await fetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
+        const res = await apiFetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
         const data = await res.json();
         const sid = data.session_id;
         setSessionId(sid);
@@ -118,7 +119,7 @@ export default function Home() {
   const startNewSession = async () => {
     try {
       wsRef.current?.close();
-      const res = await fetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
+      const res = await apiFetch(`${BACKEND_URL}/api/sessions`, { method: "POST" });
       const data = await res.json();
       sessionStorage.setItem("bioChat_sessionId", data.session_id);
       // Full reload to cleanly reconnect

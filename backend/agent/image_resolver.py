@@ -1,5 +1,8 @@
 """Resolve the correct Docker image for an analysis, extending if needed."""
 
+import asyncio
+import shlex
+
 import docker
 
 from config import settings
@@ -40,6 +43,11 @@ async def resolve_image(base_name: str, extra_packages: list[str] | None = None)
 
     Returns the image tag to use.
     """
+    return await asyncio.to_thread(_resolve_image_sync, base_name, extra_packages or [])
+
+
+def _resolve_image_sync(base_name: str, extra_packages: list[str]) -> str:
+    """Resolve or build the Docker image needed for analysis."""
     extra_packages = extra_packages or []
     client = docker.from_env()
 
@@ -73,7 +81,7 @@ async def resolve_image(base_name: str, extra_packages: list[str] | None = None)
             + "), repos='https://cran.r-project.org')\""
         )
     else:
-        install_cmd = f"pip install --no-cache-dir {' '.join(extra_packages)}"
+        install_cmd = "pip install --no-cache-dir " + " ".join(shlex.quote(pkg) for pkg in extra_packages)
 
     # Run base image, install packages, commit
     container = client.containers.run(

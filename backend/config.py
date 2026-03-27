@@ -5,6 +5,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_csv(value: str | None, default: list[str]) -> list[str]:
+    if not value:
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 class Settings:
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
@@ -18,9 +30,24 @@ class Settings:
 
     DATA_CACHE_DIR: Path = Path(os.getenv("DATA_CACHE_DIR", str(Path(__file__).parent.parent / "data" / "datasets")))
     WORKSPACE_DIR: Path = Path(os.getenv("WORKSPACE_DIR", str(Path(__file__).parent.parent / "workspaces")))
+    SESSION_STATE_DIR: Path = Path(os.getenv("SESSION_STATE_DIR", str(WORKSPACE_DIR / "_sessions")))
 
     SKILLS_DIR: Path = Path(os.getenv("SKILLS_DIR", str(Path(__file__).parent / "skills" / "templates")))
     LESSONS_DIR: Path = Path(os.getenv("LESSONS_DIR", str(Path(__file__).parent / "memory" / "lessons")))
+
+    CORS_ALLOWED_ORIGINS: list[str] = _parse_csv(
+        os.getenv("CORS_ALLOWED_ORIGINS"),
+        [
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+    )
+    CONTROL_API_TOKEN: str = os.getenv("CONTROL_API_TOKEN", "")
+    CONTROL_COOKIE_NAME: str = os.getenv("CONTROL_COOKIE_NAME", "biochat_control")
+    CONTROL_COOKIE_SECURE: bool = _parse_bool(os.getenv("CONTROL_COOKIE_SECURE"), default=False)
+    ENABLE_DEV_ENDPOINTS: bool = _parse_bool(os.getenv("ENABLE_DEV_ENDPOINTS"), default=False)
 
     # Self-hosted data mirror (S3, GCS, HTTP, NFS)
     # Set to your mirror URL to avoid downloading from Zenodo/UCSC directly

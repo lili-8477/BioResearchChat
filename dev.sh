@@ -40,7 +40,7 @@ done
 
 # Start frontend
 echo "Starting frontend on :3000..."
-(cd "$DIR/frontend" && npm run dev) &
+(cd "$DIR/frontend" && NEXT_PUBLIC_CONTROL_API_TOKEN="${CONTROL_API_TOKEN:-}" npm run dev) &
 FRONTEND_PID=$!
 
 # Cleanup on exit
