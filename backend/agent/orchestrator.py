@@ -321,8 +321,8 @@ class Orchestrator:
         """Count how many checklists have been answered.
 
         A checklist is 'answered' when a user message appears after it.
-        Step 0: data type, Step 1: analysis method, Step 2: expected output.
-        Returns 3 when all answered → triggers analysis.
+        Step 0: seq type, Step 1: analysis method, Step 2: input format, Step 3: output.
+        Returns 4 when all answered → triggers summary.
         """
         checklists_answered = 0
         waiting_for_answer = False
@@ -332,38 +332,51 @@ class Orchestrator:
             elif m.role == "user" and waiting_for_answer:
                 checklists_answered += 1
                 waiting_for_answer = False
-        return min(checklists_answered, 3)
+        return min(checklists_answered, 4)
+
+    def _get_checklist_answers(self, session: Session) -> dict:
+        """Extract checklist answers from session messages as {checklist_id: answer}."""
+        answers = {}
+        current_id = None
+        for m in session.messages:
+            if m.msg_type == "checklist":
+                current_id = m.data.get("id")
+            elif m.role == "user" and current_id:
+                answers[current_id] = m.content
+                current_id = None
+        return answers
 
     async def _converse(
         self,
         session: Session,
         content: str,
     ) -> AsyncGenerator[Message, None]:
-        """Guide the user through 3 checklists: data type, analysis method, expected output."""
+        """Guide the user through 4 dynamic checklists adapted to their seq type.
+
+        Steps: seq type → analysis method → input format → expected output.
+        Options for steps 2-4 adapt based on the user's previous selections.
+        """
+        from agent.guidance import SEQ_TYPES, get_output_options
+
         self._update_session(session, state=SessionState.CONVERSING)
 
         step = self._checklist_step(session)
+        answers = self._get_checklist_answers(session)
 
-        # Step 0: What data type?
+        # Step 0: What sequencing type?
         if step == 0:
-            # Greeting for first interaction
             if len([m for m in session.messages if m.role == "user"]) <= 1:
-                yield session.add_message(
-                    "assistant",
-                    "Hi! Let's set up your analysis.",
-                )
+                yield session.add_message("assistant", "Hi! Let's set up your analysis.")
             yield session.add_message(
                 "assistant",
-                "What data type?",
+                "What type of sequencing data?",
                 msg_type="checklist",
                 data={
-                    "id": "data_type",
+                    "id": "seq_type",
                     "title": "What type of data are you working with?",
                     "options": [
-                        {"value": "scrna", "label": "Single-cell RNA-seq"},
-                        {"value": "bulk_rna", "label": "Bulk RNA-seq"},
-                        {"value": "chipseq", "label": "ChIP-seq / ATAC-seq"},
-                        {"value": "spatial", "label": "Spatial transcriptomics"},
+                        {"value": key, "label": cfg["label"]}
+                        for key, cfg in SEQ_TYPES.items()
                     ],
                     "allow_custom": True,
                     "custom_placeholder": "Or type your data type...",
@@ -371,76 +384,134 @@ class Orchestrator:
             )
             return
 
-        # Step 1: What analysis method?
+        # Resolve the seq type config for adaptive steps
+        seq_type_answer = answers.get("seq_type", "")
+        seq_key = self._resolve_seq_type(seq_type_answer)
+        seq_config = SEQ_TYPES.get(seq_key, {})
+
+        # Step 1: What analysis method? (adapts to seq type)
         if step == 1:
+            methods = seq_config.get("methods", [
+                {"value": "general", "label": "General analysis"},
+            ])
             yield session.add_message(
                 "assistant",
-                "What analysis method?",
+                "What analysis would you like to run?",
                 msg_type="checklist",
                 data={
                     "id": "method",
-                    "title": "How should I analyze it? (or paste a paper/GitHub URL)",
-                    "options": [
-                        {"value": "de", "label": "Differential expression"},
-                        {"value": "clustering", "label": "Clustering & visualization"},
-                        {"value": "enrichment", "label": "Pathway / gene set enrichment"},
-                        {"value": "peak_calling", "label": "Peak calling & signal analysis"},
-                    ],
+                    "title": "What analysis method? (or paste a paper/GitHub URL)",
+                    "options": methods,
                     "allow_custom": True,
                     "custom_placeholder": "Or type a method / paste a URL...",
                 },
             )
             return
 
-        # Step 2: Expected output?
+        # Step 2: Input data format? (adapts to seq type)
         if step == 2:
+            inputs = seq_config.get("inputs", [
+                {"value": "file", "label": "Upload a file"},
+                {"value": "geo", "label": "GEO accession (GSExxxxx)"},
+            ])
             yield session.add_message(
                 "assistant",
-                "What output do you expect?",
+                "What's your input data?",
+                msg_type="checklist",
+                data={
+                    "id": "input_format",
+                    "title": "What input data do you have?",
+                    "options": inputs,
+                    "allow_custom": True,
+                    "custom_placeholder": "Or describe your data source...",
+                },
+            )
+            return
+
+        # Step 3: Expected output? (adapts to seq type + method)
+        if step == 3:
+            method_answer = answers.get("method", "")
+            method_key = self._resolve_method(method_answer, seq_config)
+            output_options = get_output_options(seq_key, method_key)
+            yield session.add_message(
+                "assistant",
+                "What output do you want?",
                 msg_type="checklist",
                 data={
                     "id": "output",
-                    "title": "What output do you want?",
-                    "options": [
-                        {"value": "plots", "label": "Plots (UMAP, volcano, heatmap)"},
-                        {"value": "tables", "label": "Tables (DEG list, stats)"},
-                        {"value": "report", "label": "Full report (plots + tables + summary)"},
-                        {"value": "files", "label": "Processed files (h5ad, bigWig, BED)"},
-                    ],
+                    "title": "What output do you expect?",
+                    "options": output_options,
                     "allow_custom": True,
                     "custom_placeholder": "Or describe what you need...",
                 },
             )
             return
 
-        # All 3 answered — show summary, ask user to add details or proceed
+        # All 4 answered — store in paper_info and show summary
         self._update_session(session, state=SessionState.READY)
 
-        # Collect checklist answers
-        answers = []
-        waiting = False
-        for m in session.messages:
-            if m.msg_type == "checklist":
-                waiting = True
-            elif m.role == "user" and waiting:
-                answers.append(m.content)
-                waiting = False
+        # Store structured checklist data into paper_info for downstream use
+        if seq_config:
+            session.paper_info["analysis_type"] = seq_config.get("analysis_type", "general")
+        session.paper_info["seq_type"] = answers.get("seq_type", "")
+        session.paper_info["method"] = answers.get("method", "")
+        session.paper_info["input_format"] = answers.get("input_format", "")
+        session.paper_info["expected_output"] = answers.get("output", "")
+        self.persist_session(session)
 
-        labels = ["Data", "Method", "Output"]
+        labels = ["Data type", "Method", "Input", "Output"]
+        keys = ["seq_type", "method", "input_format", "output"]
         summary_lines = []
-        for i, ans in enumerate(answers[:3]):
-            label = labels[i] if i < len(labels) else f"Step {i+1}"
-            summary_lines.append(f"- **{label}:** {ans}")
+        for label, key in zip(labels, keys):
+            val = answers.get(key, "")
+            if val:
+                summary_lines.append(f"- **{label}:** {val}")
 
         summary = "\n".join(summary_lines)
         yield session.add_message(
             "assistant",
-            f"Got it! Here's what I have so far:\n\n{summary}\n\n"
+            f"Got it! Here's what I have:\n\n{summary}\n\n"
             "You can now:\n"
             "- **Paste a paper or GitHub URL** for me to extract methods from\n"
-            "- **Add more details** in the chat (dataset IDs, comparisons, parameters)\n"
-            "- Or just type **go** and I'll plan the analysis with what I have",
+            "- **Add more details** (dataset IDs, comparisons, specific parameters)\n"
+            "- Or just type **go** to start planning",
         )
+
+    @staticmethod
+    def _resolve_seq_type(answer: str) -> str:
+        """Match a user's free-text seq type answer to a SEQ_TYPES key."""
+        from agent.guidance import SEQ_TYPES
+
+        answer_lower = answer.lower().strip()
+        # Exact key match
+        if answer_lower in SEQ_TYPES:
+            return answer_lower
+        # Match by label
+        for key, cfg in SEQ_TYPES.items():
+            if answer_lower == cfg["label"].lower():
+                return key
+        # Fuzzy keyword match
+        keywords = {
+            "scrna": ["single", "scrna", "sc-rna", "10x", "single-cell", "singlecell"],
+            "bulk_rna": ["bulk", "deseq", "rna-seq", "rnaseq"],
+            "chipseq": ["chip", "atac", "peak", "histone", "tf binding"],
+            "spatial": ["spatial", "visium", "slide", "merfish", "stereo"],
+        }
+        for key, kws in keywords.items():
+            if any(kw in answer_lower for kw in kws):
+                return key
+        return answer_lower  # fallback
+
+    @staticmethod
+    def _resolve_method(answer: str, seq_config: dict) -> str:
+        """Match a user's free-text method answer to a method value."""
+        answer_lower = answer.lower().strip()
+        for m in seq_config.get("methods", []):
+            if answer_lower == m["value"] or answer_lower == m["label"].lower():
+                return m["value"]
+            if m["value"] in answer_lower or answer_lower in m["label"].lower():
+                return m["value"]
+        return answer_lower
 
     async def _start_analysis(
         self,

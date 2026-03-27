@@ -103,21 +103,68 @@ def _markdown_to_lesson(path: Path) -> Lesson | None:
     )
 
 
+_TAG_TO_SUBFOLDER = {
+    "scrnaseq": "scrnaseq",
+    "scrna": "scrnaseq",
+    "single-cell": "scrnaseq",
+    "scimilarity": "scrnaseq",
+    "scanpy": "scrnaseq",
+    "rnaseq": "bulkrnaseq",
+    "deseq2": "bulkrnaseq",
+    "bulk": "bulkrnaseq",
+    "edger": "bulkrnaseq",
+    "chipseq": "chipseq_atacseq",
+    "atacseq": "chipseq_atacseq",
+    "atac-seq": "chipseq_atacseq",
+    "chip-seq": "chipseq_atacseq",
+    "deeptools": "chipseq_atacseq",
+    "macs2": "chipseq_atacseq",
+    "spatial": "spatial",
+    "visium": "spatial",
+    "squidpy": "spatial",
+}
+
+
+def _infer_subfolder(tags: list[str]) -> str:
+    """Determine lesson subfolder from tags. Returns '' if no match."""
+    for tag in tags:
+        tag_lower = tag.lower()
+        # Check tag and common variations
+        for key, folder in _TAG_TO_SUBFOLDER.items():
+            if key == tag_lower or key == tag_lower.replace("-", "").replace("_", ""):
+                return folder
+        # Also check if tag contains a known key (e.g., "tumor-scrna-seq" contains "scrna")
+        for key, folder in _TAG_TO_SUBFOLDER.items():
+            if key in tag_lower:
+                return folder
+    return ""
+
+
 class MemoryManager:
-    """Manages the lesson store — markdown files indexed by qmd for hybrid search."""
+    """Manages the lesson store — markdown files indexed by qmd for hybrid search.
+
+    Lessons are organized in subfolders by sequencing type:
+      lessons/scrnaseq/, lessons/bulkrnaseq/, lessons/chipseq_atacseq/, lessons/spatial/
+    """
 
     def __init__(self, lessons_dir: Path | None = None):
         self.lessons_dir = lessons_dir or settings.LESSONS_DIR
         self.lessons_dir.mkdir(parents=True, exist_ok=True)
         self._qmd_initialized = False
 
-    def _lesson_path(self, lesson_id: str) -> Path:
-        return self.lessons_dir / f"{lesson_id}.md"
+    def _find_lesson_path(self, lesson_id: str) -> Path | None:
+        """Find a lesson file by ID (searches subfolders)."""
+        for path in self.lessons_dir.rglob(f"{lesson_id}.md"):
+            return path
+        return None
 
     def _save_lesson(self, lesson: Lesson):
-        """Save lesson as a markdown file."""
+        """Save lesson as a markdown file in the appropriate subfolder."""
+        subfolder = _infer_subfolder(lesson.tags)
+        target_dir = self.lessons_dir / subfolder if subfolder else self.lessons_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
         md = _lesson_to_markdown(lesson)
-        self._lesson_path(lesson.id).write_text(md)
+        (target_dir / f"{lesson.id}.md").write_text(md)
         self._qmd_initialized = False  # needs re-index
 
     def _qmd_index(self):
@@ -149,7 +196,7 @@ class MemoryManager:
     ) -> list[Lesson]:
         """List all lessons, optionally filtered."""
         lessons = []
-        for path in sorted(self.lessons_dir.glob("*.md")):
+        for path in sorted(self.lessons_dir.rglob("*.md")):
             lesson = _markdown_to_lesson(path)
             if not lesson:
                 continue
@@ -161,8 +208,8 @@ class MemoryManager:
         return lessons
 
     def get_lesson(self, lesson_id: str) -> Lesson | None:
-        path = self._lesson_path(lesson_id)
-        if path.exists():
+        path = self._find_lesson_path(lesson_id)
+        if path:
             return _markdown_to_lesson(path)
         return None
 
@@ -191,8 +238,8 @@ class MemoryManager:
         return lesson
 
     def delete_lesson(self, lesson_id: str) -> bool:
-        path = self._lesson_path(lesson_id)
-        if path.exists():
+        path = self._find_lesson_path(lesson_id)
+        if path:
             path.unlink()
             self._qmd_initialized = False
             return True

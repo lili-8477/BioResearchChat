@@ -14,8 +14,21 @@ from config import settings
 from skills.models import Skill, SkillCreate
 
 
+_TYPE_TO_SUBFOLDER = {
+    "scrna_seq": "scrnaseq",
+    "bulk_rnaseq": "bulkrnaseq",
+    "chipseq": "chipseq_atacseq",
+    "spatial": "spatial",
+    "setup": "_shared",
+}
+
+
 class SkillManager:
     """Manages bioinformatics pipeline skill templates with progressive loading.
+
+    Skills are organized in subfolders by sequencing type:
+      templates/scrnaseq/, templates/bulkrnaseq/, templates/chipseq_atacseq/,
+      templates/spatial/, templates/_shared/
 
     Two-tier loading:
     - get_registry(): lightweight metadata (name, description, tags) for planning (~50 tokens/skill)
@@ -51,7 +64,7 @@ class SkillManager:
         """Load all skills into cache if not already loaded."""
         if self._skills_cache:
             return
-        for path in sorted(self.skills_dir.glob("*.md")):
+        for path in sorted(self.skills_dir.rglob("*.md")):
             try:
                 skill = self._load_skill(path)
                 self._skills_cache[skill.name] = skill
@@ -74,7 +87,7 @@ class SkillManager:
         if self._registry is not None:
             return self._registry
         self._registry = []
-        for path in sorted(self.skills_dir.glob("*.md")):
+        for path in sorted(self.skills_dir.rglob("*.md")):
             try:
                 meta, _ = self._parse_md(path)
                 self._registry.append({
@@ -159,17 +172,22 @@ class SkillManager:
         return skill
 
     def delete_skill(self, name: str) -> bool:
-        """Delete a skill by name."""
-        path = self.skills_dir / f"{name}.md"
-        if path.exists():
+        """Delete a skill by name (searches subfolders)."""
+        for path in self.skills_dir.rglob(f"{name}.md"):
             path.unlink()
             self._invalidate_cache()
             return True
         return False
 
     def _save_skill(self, skill: Skill):
-        """Save a skill as Markdown with YAML frontmatter."""
-        path = self.skills_dir / f"{skill.name}.md"
+        """Save a skill as Markdown with YAML frontmatter into the correct subfolder."""
+        # Remove old file if it exists elsewhere (e.g., analysis_type changed)
+        for old in self.skills_dir.rglob(f"{skill.name}.md"):
+            old.unlink()
+        subfolder = _TYPE_TO_SUBFOLDER.get(skill.analysis_type, "")
+        target_dir = self.skills_dir / subfolder if subfolder else self.skills_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{skill.name}.md"
         meta = {
             "name": skill.name,
             "description": skill.description,
